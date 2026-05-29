@@ -305,6 +305,7 @@ export default function NewPlanPage() {
   // ── タップ：ミニポップアップを表示（運動は直接シート） ────
   function handleCellClick(e: MouseEvent<HTMLButtonElement>, date: string, slot: Slot) {
     if (step !== 'edit') return
+    if (date < today) return
     if (slot === 'exercise') {
       setSheet({ date, slot })
       return
@@ -606,6 +607,7 @@ export default function NewPlanPage() {
 
                 {weekDates.map(date => {
                   const isToday    = date === today
+                  const isPast     = date < today
                   const items      = cellBlocks(date, slotMeta.key)
                   const first      = items[0]
                   const more       = items.length - 1
@@ -617,9 +619,9 @@ export default function NewPlanPage() {
                   return (
                     <button
                       key={`c-${date}-${slotMeta.key}`}
-                      onClick={e => handleCellClick(e, date, slotMeta.key)}
+                      onClick={e => !isPast && handleCellClick(e, date, slotMeta.key)}
                       className={`relative min-h-[52px] rounded-lg flex flex-col items-center justify-center px-0.5 text-[10px] leading-tight select-none
-                        ${
+                        ${isPast ? 'opacity-30 cursor-not-allowed' :
                           isSkip
                             ? 'bg-stone-900 border border-dashed border-stone-700 text-stone-600'
                             : isWant

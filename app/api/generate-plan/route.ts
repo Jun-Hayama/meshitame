@@ -20,11 +20,14 @@ JSON形式のみ（前後に説明文・コードブロック不要）: ${OUTPUT
       ? `\n食べないスロット（生成しない）: ${JSON.stringify(skipSlots)}`
       : ''
 
+    const today = new Date().toISOString().split('T')[0]
+    const futureDates = (weekDates as string[]).filter(d => d >= today)
+
     userMessage = `TDEE: ${userProfile.base_calories}kcal/日
-日程: ${weekDates.join(',')}
+日程（今日以降のみ）: ${futureDates.join(',')}
 アンカー（生成済み・除外）: ${JSON.stringify(anchorBlocks)}${skipNote}
 
-アンカー以外の空きスロットのみis_anchor:falseで補完してください。`
+今日以降の空きスロットのみis_anchor:falseで補完してください。過去の日付のブロックは生成しないこと。`
 
   } else {
     // 旧形式（intention）

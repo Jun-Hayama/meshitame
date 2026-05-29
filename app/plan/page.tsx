@@ -137,7 +137,7 @@ export default function PlanPage() {
         const beer  = toBeerCount(block.calories)
         const ramen = toRamenCount(block.calories)
         const reward = ramen > 0 ? `ラーメン${ramen}杯分` : beer > 0 ? `ビール${beer}本分` : `${block.calories}kcal分`
-        setToast(`🏦 ${block.name}完了！${reward}メシ貯めに追加！`)
+        setToast(`🍺 ${block.name}完了！${reward}メシポに追加！`)
         setTimeout(() => setToast(null), 5000)
       } else if (status === 'planned' && block.status === 'done') {
         await doUpsertBuffer((buffer?.total_buffer ?? 0) - block.calories)
@@ -177,13 +177,13 @@ export default function PlanPage() {
 
     if (delta < 0) {
       // 余裕が生まれた → バッファに自動積立
-      setToast(`🏦 ${Math.abs(delta)}kcalをメシ貯めに追加！`)
+      setToast(`🍺 ${Math.abs(delta)}kcalをメシポに追加！`)
       setTimeout(() => setToast(null), 4000)
     } else {
       // オーバー
       if (newBufferTotal >= 0) {
         // バッファで吸収できた
-        setToast(`🏦 バッファから${delta}kcal充当しました`)
+        setToast(`🍺 メシポから${delta}kcal充当しました`)
         setTimeout(() => setToast(null), 4000)
       } else {
         // バッファでは吸収しきれない → リプランプロンプト
@@ -312,15 +312,15 @@ export default function PlanPage() {
         )}
       </header>
 
-      {/* ─── メシ貯めバッファ ─── */}
+      {/* ─── メシポバッファ ─── */}
       {weekPlan && (
         <div className="px-5 mb-3">
           {bufferTotal > 0 ? (
             <div className="bg-amber-400/10 border border-amber-400/20 rounded-2xl px-4 py-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-amber-400 text-xs font-semibold mb-0.5">🏦 今週のメシ貯め</p>
-                  <p className="text-2xl font-bold text-amber-400">+{bufferTotal.toLocaleString()} kcal</p>
+                  <p className="text-amber-400 text-xs font-semibold mb-0.5">🍺 メシポ残高</p>
+                  <p className="text-2xl font-bold text-amber-400">{bufferTotal.toLocaleString()}pt</p>
                   <p className="text-stone-500 text-xs mt-0.5">（{bufferEquivText}）</p>
                 </div>
                 <button
@@ -333,8 +333,8 @@ export default function PlanPage() {
             </div>
           ) : bufferTotal < 0 ? (
             <div className="bg-rose-400/10 border border-rose-400/20 rounded-2xl px-4 py-3">
-              <p className="text-rose-400 text-xs font-semibold mb-0.5">⚠️ メシ貯め赤字</p>
-              <p className="text-xl font-bold text-rose-400">{bufferTotal.toLocaleString()} kcal</p>
+              <p className="text-rose-400 text-xs font-semibold mb-0.5">⚠️ メシポ赤字</p>
+              <p className="text-xl font-bold text-rose-400">{bufferTotal.toLocaleString()}pt</p>
               <p className="text-stone-500 text-xs mt-1">運動か食事で調整しよう</p>
               <button
                 onClick={() => router.push('/log/deviation')}
@@ -345,8 +345,8 @@ export default function PlanPage() {
             </div>
           ) : (
             <div className="bg-stone-900 rounded-2xl px-4 py-3">
-              <p className="text-stone-500 text-xs font-semibold mb-0.5">🏦 今週のメシ貯め</p>
-              <p className="text-stone-600 text-sm">まだ貯まっていません。ヘルシー食や運動で貯めよう！</p>
+              <p className="text-stone-500 text-xs font-semibold mb-0.5">🍺 メシポ残高</p>
+              <p className="text-stone-600 text-sm">まだ貯まっていません。ヘルシー食や運動でメシポを貯めよう！</p>
             </div>
           )}
         </div>
@@ -422,6 +422,7 @@ export default function PlanPage() {
                         <PlanBlockCard
                           key={block.id}
                           block={block}
+                          isPast={selectedDate < formatDate(new Date())}
                           onDone={() => updateBlockStatus(block, 'done')}
                           onSkip={() => updateBlockStatus(block, 'skipped')}
                           onUndo={() => updateBlockStatus(block, 'planned')}
@@ -448,6 +449,7 @@ export default function PlanPage() {
                         <PlanBlockCard
                           key={block.id}
                           block={block}
+                          isPast={selectedDate < formatDate(new Date())}
                           onDone={() => updateBlockStatus(block, 'done')}
                           onSkip={() => updateBlockStatus(block, 'skipped')}
                           onUndo={() => updateBlockStatus(block, 'planned')}
@@ -490,7 +492,7 @@ export default function PlanPage() {
           >
             <div className="w-8 h-1 bg-stone-700 rounded-full mx-auto mb-5" />
             <p className="text-stone-400 text-sm mb-1">何に使う？</p>
-            <p className="text-amber-400 text-xs mb-4">残り {bufferTotal.toLocaleString()}kcal</p>
+            <p className="text-amber-400 text-xs mb-4">残高 {bufferTotal.toLocaleString()}pt</p>
             <div className="space-y-2">
               {BUFFER_USE_OPTIONS.map(opt => (
                 <button
@@ -600,13 +602,14 @@ export default function PlanPage() {
 }
 
 function PlanBlockCard({
-  block, onDone, onSkip, onUndo, onChangePress,
+  block, onDone, onSkip, onUndo, onChangePress, isPast = false,
 }: {
   block: PlanBlock
   onDone: () => void
   onSkip: () => void
   onUndo: () => void
   onChangePress: () => void
+  isPast?: boolean
 }) {
   const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
   const isDone     = block.status === 'done'
@@ -620,7 +623,7 @@ function PlanBlockCard({
   return (
     <div className={`rounded-2xl px-4 py-3 flex items-center gap-3 ${
       block.is_want ? 'bg-amber-400/10 border border-amber-400/30' : 'bg-stone-900'
-    } ${isDone ? 'opacity-60' : ''}`}>
+    } ${(isDone || isPast) ? 'opacity-60' : ''}`}>
       {block.is_want && <span className="text-amber-400 text-xs font-bold">★</span>}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -643,7 +646,13 @@ function PlanBlockCard({
         </p>
       </div>
       <div className="flex gap-1.5 items-center shrink-0">
-        {isDone ? (
+        {isPast ? (
+          isDone ? (
+            <span className="text-xs px-2 py-1 rounded-lg bg-emerald-400/20 text-emerald-400">✅ 完了</span>
+          ) : isSkipped ? (
+            <span className="text-xs px-2 py-1 rounded-lg bg-stone-800 text-stone-500">⏭ スキップ</span>
+          ) : null
+        ) : isDone ? (
           <button onClick={onUndo} className="text-xs px-2 py-1 rounded-lg bg-emerald-400/20 text-emerald-400">
             ✅ 完了
           </button>
@@ -659,9 +668,11 @@ function PlanBlockCard({
             <button onClick={onDone} className="text-xs px-2.5 py-1 rounded-lg bg-emerald-400/20 text-emerald-400 font-medium">✅ 完了</button>
           </>
         )}
-        <button onClick={onChangePress} className="text-xs px-2 py-1 rounded-lg bg-stone-800 text-stone-500">
-          変更
-        </button>
+        {!isPast && (
+          <button onClick={onChangePress} className="text-xs px-2 py-1 rounded-lg bg-stone-800 text-stone-500">
+            変更
+          </button>
+        )}
       </div>
     </div>
   )

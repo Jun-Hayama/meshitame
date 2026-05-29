@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { PlanBlock, WeekPlan, BLOCK_LABELS, MEAL_TYPES, EXERCISE_TYPES, BlockType } from '@/types'
+import { PlanBlock, WeekPlan, CalorieBuffer, BLOCK_LABELS, MEAL_TYPES, EXERCISE_TYPES, BlockType } from '@/types'
 import { getWeekStart, formatDate, getDayLabel, toBeerCount, toRamenCount } from '@/lib/calories'
 
 const MEAL_ORDER: BlockType[] = ['meal_morning', 'meal_lunch', 'meal_snack', 'meal_dinner', 'meal_drinks']
@@ -14,9 +14,11 @@ export default function Home() {
   const [user, setUser] = useState<any>(null)
   const [todayBlocks, setTodayBlocks] = useState<PlanBlock[]>([])
   const [weekPlan, setWeekPlan] = useState<WeekPlan | null>(null)
-  const [weekAllBlocks, setWeekAllBlocks] = useState<PlanBlock[]>([])
   const [userBaseCalories, setUserBaseCalories] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+  const [buffer, setBuffer] = useState<CalorieBuffer | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [eodDismissed, setEodDismissed] = useState(false)
   const today = formatDate(new Date())
 
   useEffect(() => {
@@ -32,7 +34,7 @@ export default function Home() {
     const weekStart = formatDate(weekStartDate)
     const weekEnd = formatDate(new Date(weekStartDate.getTime() + 6 * 86400000))
 
-    const [{ data: plan }, { data: blocks }, { data: allWeekBlocks }, { data: profile }] = await Promise.all([
+    const [{ data: plan }, { data: blocks }, { data: profile }] = await Promise.all([
       supabase.from('week_plans')
         .select('*')
         .eq('user_id', userId)
@@ -43,11 +45,6 @@ export default function Home() {
         .eq('user_id', userId)
         .eq('plan_date', today)
         .order('sort_order'),
-      supabase.from('plan_blocks')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('plan_date', weekStart)
-        .lte('plan_date', weekEnd),
       supabase.from('user_profiles')
         .select('base_calories')
         .eq('id', userId)
@@ -56,23 +53,68 @@ export default function Home() {
 
     setWeekPlan(plan)
     setTodayBlocks(blocks || [])
-    setWeekAllBlocks(allWeekBlocks || [])
     setUserBaseCalories(profile?.base_calories ?? null)
+
+    if (plan) {
+      const { data: buf } = await supabase
+        .from('calorie_buffers').select('*').eq('week_plan_id', plan.id).maybeSingle()
+      setBuffer(buf ?? null)
+    }
     setLoading(false)
   }
 
-  async function markDone(blockId: string) {
-    await supabase.from('plan_blocks')
-      .update({ status: 'done' })
-      .eq('id', blockId)
-    setTodayBlocks(prev => prev.map(b => b.id === blockId ? { ...b, status: 'done' } : b))
+  function showToast(message: string) {
+    setToast(message)
+    setTimeout(() => setToast(null), 3000)
   }
 
-  async function markSkipped(blockId: string) {
-    await supabase.from('plan_blocks')
-      .update({ status: 'skipped' })
-      .eq('id', blockId)
-    setTodayBlocks(prev => prev.map(b => b.id === blockId ? { ...b, status: 'skipped' } : b))
+  async function addToBuffer(delta: number) {
+    if (!weekPlan || !user) return
+    const newTotal = (buffer?.total_buffer ?? 0) + delta
+    const { data } = await supabase
+      .from('calorie_buffers')
+      .upsert(
+        { user_id: user.id, week_plan_id: weekPlan.id, total_buffer: newTotal, updated_at: new Date().toISOString() },
+        { onConflict: 'week_plan_id' }
+      )
+      .select()
+      .maybeSingle()
+    setBuffer(data ?? { ...(buffer as CalorieBuffer), total_buffer: newTotal })
+  }
+
+  async function markDone(block: PlanBlock) {
+    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
+    await supabase.from('plan_blocks').update({ status: 'done' }).eq('id', block.id)
+    setTodayBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: 'done' } : b))
+
+    if (isExercise) {
+      const kcal = block.calories || 0
+      await addToBuffer(kcal)
+      const beer = toBeerCount(kcal)
+      showToast(beer > 0
+        ? `💪 メシポ +${kcal}kcal！ビール${beer}本分貯まった`
+        : `💪 メシポ +${kcal}kcal 貯まった！`)
+    } else {
+      const actual = block.actual_calories ?? block.calories
+      const planned = block.calories
+      if (actual < planned) {
+        const diff = planned - actual
+        await addToBuffer(diff)
+        showToast(`🥗 メシポ +${diff}kcal！`)
+      }
+    }
+  }
+
+  async function markSkipped(block: PlanBlock) {
+    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
+    await supabase.from('plan_blocks').update({ status: 'skipped' }).eq('id', block.id)
+    setTodayBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: 'skipped' } : b))
+
+    if (!isExercise) {
+      const kcal = block.calories || 0
+      await addToBuffer(kcal)
+      showToast(`🍱 スキップ！メシポ +${kcal}kcal 貯まった`)
+    }
   }
 
   const caloriesIn = todayBlocks
@@ -95,25 +137,22 @@ export default function Home() {
     blocks: todayBlocks.filter(b => b.block_type === type),
   })).filter(g => g.blocks.length > 0)
 
-  // 今週の残り余裕計算
-  const weekSurplus = (() => {
-    if (!weekPlan || weekAllBlocks.length === 0) return null
-    const tdeeWeek = (userBaseCalories ?? 2200) * 7
-    const doneCalIn = weekAllBlocks
-      .filter(b => b.status === 'done' && (MEAL_TYPES as string[]).includes(b.block_type))
-      .reduce((s, b) => s + (b.calories || 0), 0)
-    const doneBurned = weekAllBlocks
-      .filter(b => b.status === 'done' && (EXERCISE_TYPES as string[]).includes(b.block_type))
-      .reduce((s, b) => s + (b.calories || 0), 0)
-    const plannedCalIn = weekAllBlocks
-      .filter(b => b.status === 'planned' && b.plan_date >= today && (MEAL_TYPES as string[]).includes(b.block_type))
-      .reduce((s, b) => s + (b.calories || 0), 0)
-    const plannedBurned = weekAllBlocks
-      .filter(b => b.status === 'planned' && b.plan_date >= today && (EXERCISE_TYPES as string[]).includes(b.block_type))
-      .reduce((s, b) => s + (b.calories || 0), 0)
-    const forecast = (doneCalIn + plannedCalIn) - (doneBurned + plannedBurned)
-    return tdeeWeek - forecast
-  })()
+  // 今日の残り予定カロリー・メシポ
+  const todayRemainingKcal = todayBlocks
+    .filter(b => b.status === 'planned' && (MEAL_TYPES as string[]).includes(b.block_type))
+    .reduce((s, b) => s + (b.calories || 0), 0)
+  const bufferTotal = buffer?.total_buffer ?? 0
+
+  const allTodayDone = todayBlocks.length > 0 && todayBlocks.every(b => b.status !== 'planned')
+  const hasLateIncomplete = new Date().getHours() >= 21 && todayBlocks.some(b => b.status === 'planned')
+  const showEOD = !eodDismissed && todayBlocks.length > 0 && (allTodayDone || hasLateIncomplete)
+  const todayActualCalIn = todayBlocks
+    .filter(b => (MEAL_TYPES as string[]).includes(b.block_type) && b.status === 'done')
+    .reduce((s, b) => s + ((b.actual_calories ?? b.calories) || 0), 0)
+  const todayActualBurned = todayBlocks
+    .filter(b => (EXERCISE_TYPES as string[]).includes(b.block_type) && b.status === 'done')
+    .reduce((s, b) => s + (b.calories || 0), 0)
+  const todayOverage = (todayActualCalIn - todayActualBurned) - (userBaseCalories ?? 2200)
 
   if (loading) {
     return (
@@ -174,47 +213,33 @@ export default function Home() {
           </div>
         )}
 
-        {/* 今週の残り余裕バナー */}
-        {weekSurplus !== null && (() => {
-          if (weekSurplus >= 300) {
-            const ramen = toRamenCount(weekSurplus)
-            const beer  = toBeerCount(weekSurplus)
-            const parts: string[] = []
-            if (ramen > 0) parts.push(`ラーメン${ramen}杯分`)
-            if (beer > 0)  parts.push(`ビール${beer}本分`)
-            const equiv = parts.length > 0
-              ? parts.join(' or ') + ' 食べてOKです'
-              : `あと${weekSurplus.toLocaleString()}kcal分食べてOKです`
-            return (
-              <div className="bg-amber-400/15 border border-amber-400/30 rounded-3xl p-5">
-                <p className="text-amber-400 font-bold text-base mb-1">
-                  🎉 今週あと約{weekSurplus.toLocaleString()}kcal余裕あり！
+        {/* 今日の残り・メシポバナー */}
+        {weekPlan && (todayRemainingKcal > 0 || bufferTotal >= 300) && (
+          <div className="space-y-2">
+            {todayRemainingKcal > 0 && (
+              <div className="bg-stone-900 rounded-2xl px-4 py-3">
+                <p className="text-stone-500 text-xs mb-0.5">今日の残り</p>
+                <p className="text-stone-100 font-bold">{todayRemainingKcal.toLocaleString()}kcal</p>
+                <p className="text-stone-600 text-[11px] mt-0.5">予定メニューはまだあるよ</p>
+              </div>
+            )}
+            {bufferTotal >= 300 && (
+              <div className="bg-amber-400/15 border border-amber-400/30 rounded-2xl px-4 py-3">
+                <p className="text-amber-400 font-bold text-sm">🍺 メシポ残高 {bufferTotal.toLocaleString()}pt</p>
+                <p className="text-stone-300 text-xs mt-0.5">
+                  {(() => {
+                    const beer = toBeerCount(bufferTotal)
+                    const ramen = toRamenCount(bufferTotal)
+                    const parts: string[] = []
+                    if (ramen > 0) parts.push(`ラーメン${ramen}杯分`)
+                    if (beer > 0) parts.push(`ビール${beer}本分`)
+                    return parts.length > 0 ? parts.join(' or ') + ' 追加できるよ' : `${bufferTotal}kcal`
+                  })()}
                 </p>
-                <p className="text-stone-300 text-sm mb-3">{equiv}</p>
-                <button
-                  onClick={() => router.push('/plan/new')}
-                  className="bg-amber-400 text-stone-950 font-bold text-sm px-4 py-2 rounded-xl"
-                >
-                  何を食べる？
-                </button>
               </div>
-            )
-          }
-          if (weekSurplus > -300) {
-            return (
-              <div className="bg-stone-900 rounded-2xl px-4 py-3 flex items-center gap-2">
-                <span>✅</span>
-                <p className="text-stone-400 text-sm">今週はちょうどいいバランスです</p>
-              </div>
-            )
-          }
-          return (
-            <div className="bg-stone-900 rounded-2xl px-4 py-3 flex items-center gap-2">
-              <span>🍜</span>
-              <p className="text-stone-400 text-sm">運動でリカバリーできるよ！</p>
-            </div>
-          )
-        })()}
+            )}
+          </div>
+        )}
 
         {/* カロリーサマリ */}
         {todayBlocks.length > 0 && (
@@ -251,8 +276,8 @@ export default function Home() {
                     <BlockCard
                       key={block.id}
                       block={block}
-                      onDone={() => markDone(block.id)}
-                      onSkip={() => markSkipped(block.id)}
+                      onDone={() => markDone(block)}
+                      onSkip={() => markSkipped(block)}
                     />
                   ))}
                 </div>
@@ -273,8 +298,8 @@ export default function Home() {
                     <BlockCard
                       key={block.id}
                       block={block}
-                      onDone={() => markDone(block.id)}
-                      onSkip={() => markSkipped(block.id)}
+                      onDone={() => markDone(block)}
+                      onSkip={() => markSkipped(block)}
                     />
                   ))}
                 </div>
@@ -292,6 +317,51 @@ export default function Home() {
             📝 予定と違うことがあった
           </button>
         )}
+
+        {/* 1日終わりバナー */}
+        {showEOD && (
+          <div className={`rounded-3xl p-5 ${todayOverage >= 300 ? 'bg-rose-950/50 border border-rose-800' : 'bg-emerald-950/50 border border-emerald-800'}`}>
+            {todayOverage >= 300 ? (
+              <>
+                <p className="text-rose-400 font-bold text-base mb-1">
+                  今日 +{todayOverage}kcal オーバーかも
+                </p>
+                <p className="text-stone-300 text-sm mb-3">
+                  明日に繰り越す？ズレを記録しておこう
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => router.push('/log/deviation')}
+                    className="bg-rose-500 text-white font-bold text-sm px-4 py-2 rounded-xl"
+                  >
+                    ズレを記録する
+                  </button>
+                  <button
+                    onClick={() => setEodDismissed(true)}
+                    className="text-stone-500 text-sm px-3 py-2"
+                  >
+                    閉じる
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-emerald-400 font-bold text-base mb-1">
+                  🎉 今日もよく頑張った！
+                </p>
+                <p className="text-stone-300 text-sm mb-3">
+                  メシポ残高: {(buffer?.total_buffer ?? 0).toLocaleString()}pt
+                </p>
+                <button
+                  onClick={() => setEodDismissed(true)}
+                  className="text-stone-500 text-sm"
+                >
+                  閉じる
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </main>
       </div>
 
@@ -302,6 +372,13 @@ export default function Home() {
         <NavItem label="体重" emoji="⚖️" onClick={() => router.push('/weight')} />
         <NavItem label="設定" emoji="⚙️" onClick={() => router.push('/settings')} />
       </nav>
+
+      {/* トースト */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-stone-800 text-stone-100 text-sm font-medium px-5 py-3 rounded-2xl shadow-lg z-50 whitespace-nowrap">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }
