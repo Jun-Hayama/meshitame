@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
 
     systemPrompt = `週間食事・運動プランをJSONで返す。空きスロットのみ生成（アンカーは含めない）。1日最大6ブロック（朝昼おやつ夜晩酌運動）。TDEE±200kcal以内。ポジティブな日本語で。
 毎日必ず朝食（meal_morning）・昼食（meal_lunch）・夕食（meal_dinner）を含めること。欲望ブロックや晩酌がある日はそれも含める。スキップ指定がない限り昼食は省略しないこと。
+通常の食事ブロック（is_want:false）のnameは『和食』『洋食』『ヘルシー』『ジャンキー』『丼もの』『麺類』のいずれかのカテゴリ名のみにすること。具体的な料理名は使わないこと。欲望ブロック（is_want:true）だけは具体的な名前にすること。
 JSON形式のみ（前後に説明文・コードブロック不要）: ${OUTPUT_SCHEMA}`
 
     const skipNote = skipSlots?.length > 0
@@ -76,6 +77,7 @@ JSON形式のみ（前後に説明文・コードブロック不要）: ${OUTPUT
 
     systemPrompt = `週間食事・運動プランをJSONで返す。欲望ブロック(is_want:true)は必ず実現。1日最大6ブロック。TDEE±200kcal以内。ポジティブな日本語で。
 毎日必ず朝食（meal_morning）・昼食（meal_lunch）・夕食（meal_dinner）を含めること。欲望ブロックや晩酌がある日はそれも含める。スキップ指定がない限り昼食は省略しないこと。
+通常の食事ブロック（is_want:false）のnameは『和食』『洋食』『ヘルシー』『ジャンキー』『丼もの』『麺類』のいずれかのカテゴリ名のみにすること。具体的な料理名は使わないこと。欲望ブロック（is_want:true）だけは具体的な名前にすること。
 JSON形式のみ（前後に説明文・コードブロック不要）: ${OUTPUT_SCHEMA}`
 
     userMessage = `TDEE: ${userProfile.base_calories}kcal/日

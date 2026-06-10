@@ -202,7 +202,10 @@ export default function NewPlanPage() {
   // ユーザープロフィール（マウント時に先読み）
   const [profileLoading, setProfileLoading] = useState(true)
   const [userProfile, setUserProfile] = useState<{
+    id: string
     base_calories: number
+    weight_kg?: number
+    target_weight_kg?: number
     drink_type?: string
     drinks_per_day?: number
     drinks_calories_per_unit?: number
@@ -213,10 +216,13 @@ export default function NewPlanPage() {
       if (!user) { router.replace('/login'); return }
       const { data } = await supabase
         .from('user_profiles')
-        .select('base_calories, drink_type, drinks_per_day, drinks_calories_per_unit')
+        .select('base_calories, weight_kg, target_weight_kg, drink_type, drinks_per_day, drinks_calories_per_unit')
         .eq('id', user.id).maybeSingle()
       setUserProfile({
+        id:                       user.id,
         base_calories:            data?.base_calories ?? 2200,
+        weight_kg:                data?.weight_kg ?? undefined,
+        target_weight_kg:         data?.target_weight_kg ?? undefined,
         drink_type:               data?.drink_type,
         drinks_per_day:           data?.drinks_per_day,
         drinks_calories_per_unit: data?.drinks_calories_per_unit,
@@ -363,6 +369,32 @@ export default function NewPlanPage() {
       .filter(a => a.kind === 'skip')
       .map(a => ({ plan_date: a.date, slot: a.slot }))
 
+    const weekEnd = formatDate(new Date(weekStart.getTime() + 6 * 86400000))
+    const { data: existingPlan } = await supabase
+      .from('week_plans').select('id')
+      .eq('user_id', user.id).eq('week_start', weekStartStr)
+      .maybeSingle()
+
+    let weekPlanId: string
+    if (existingPlan) {
+      weekPlanId = existingPlan.id
+    } else {
+      const { data: inserted, error: planErr } = await supabase
+        .from('week_plans').insert({
+          user_id: user.id,
+          week_start: weekStartStr,
+          week_end: weekEnd,
+          status: 'draft',
+        })
+        .select('id').single()
+      if (planErr || !inserted) {
+        setError('週プランの作成に失敗しました')
+        setStep('edit')
+        return
+      }
+      weekPlanId = inserted.id
+    }
+
     try {
       const res = await fetch('/api/generate-plan', {
         method: 'POST',
@@ -370,7 +402,11 @@ export default function NewPlanPage() {
         body: JSON.stringify({
           anchorBlocks: anchorPayload,
           skipSlots,
-          userProfile:  userProfile || { base_calories: 2200 },
+          weekPlanId,
+          userProfile: userProfile ?? {
+            id: user.id,
+            base_calories: 2200,
+          },
           weekDates,
         }),
       })
