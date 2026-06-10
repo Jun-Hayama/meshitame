@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { PlanBlock, WeekPlan, CalorieBuffer, BLOCK_LABELS, MEAL_TYPES, EXERCISE_TYPES, BlockType } from '@/types'
-import { getWeekStart, formatDate, toBeerCount } from '@/lib/calories'
+import { getWeekStart, formatDate } from '@/lib/calories'
 
 const MEAL_ORDER: BlockType[] = ['meal_morning', 'meal_lunch', 'meal_snack', 'meal_dinner', 'meal_drinks']
 const EXERCISE_ORDER: BlockType[] = ['exercise_weights', 'exercise_cardio', 'exercise_sport']
@@ -19,12 +19,21 @@ const MEAL_CATEGORIES = [
 
 const LARGE_EXTRA = 200
 
+const UNPLANNED_EXERCISE_OPTIONS = [
+  { name: 'ウォーキング30分', block_type: 'exercise_cardio' as BlockType, calories: 150, duration_min: 30 },
+  { name: 'ウォーキング60分', block_type: 'exercise_cardio' as BlockType, calories: 300, duration_min: 60 },
+  { name: 'ランニング30分', block_type: 'exercise_cardio' as BlockType, calories: 300, duration_min: 30 },
+  { name: '筋トレ30分', block_type: 'exercise_weights' as BlockType, calories: 200, duration_min: 30 },
+  { name: '筋トレ60分', block_type: 'exercise_weights' as BlockType, calories: 350, duration_min: 60 },
+] as const
+
 const BELOW_TARGET_MESSAGES = [
   '🏃 30分歩くと +150pt だよ',
   '🥗 夜をヘルシーにすると +200pt になるよ',
 ] as const
 
 type BufferWithTarget = CalorieBuffer & { target_buffer?: number }
+type UnplannedStep = null | 'type' | 'meal' | 'exercise'
 
 export default function Home() {
   const router = useRouter()
@@ -37,6 +46,8 @@ export default function Home() {
   const [completingBlockId, setCompletingBlockId] = useState<string | null>(null)
   const [selectedMealKcal, setSelectedMealKcal] = useState<number | null>(null)
   const [mealExtraLarge, setMealExtraLarge] = useState(false)
+  const [unplannedStep, setUnplannedStep] = useState<UnplannedStep>(null)
+  const [selectedUnplannedExercise, setSelectedUnplannedExercise] = useState<number | null>(null)
   const [encourageMsg] = useState(
     () => BELOW_TARGET_MESSAGES[Math.floor(Math.random() * BELOW_TARGET_MESSAGES.length)]
   )
@@ -104,7 +115,15 @@ export default function Home() {
     setMealExtraLarge(false)
   }
 
+  function resetUnplanned() {
+    setUnplannedStep(null)
+    setSelectedMealKcal(null)
+    setMealExtraLarge(false)
+    setSelectedUnplannedExercise(null)
+  }
+
   function handleDoneClick(block: PlanBlock) {
+    resetUnplanned()
     const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
     if (isExercise) {
       markDone(block)
@@ -136,12 +155,7 @@ export default function Home() {
     ))
 
     if (isExercise) {
-      const kcal = block.calories || 0
-      await addToBuffer(kcal)
-      const beer = toBeerCount(kcal)
-      showToast(beer > 0
-        ? `💪 メシポ +${kcal}kcal！ビール${beer}本分貯まった`
-        : `💪 メシポ +${kcal}kcal 貯まった！`)
+      showToast('💪 完了！予定通り！')
     } else {
       const actual = actualCalories ?? block.calories
       const planned = block.calories
@@ -151,9 +165,9 @@ export default function Home() {
         showToast(`🥗 えらい！メシポ +${diff}pt！`)
       } else if (diff < 0) {
         await addToBuffer(diff)
-        showToast(`😅 メシポ -${Math.abs(diff)}pt`)
+        showToast(`😅 食べすぎ… メシポ -${Math.abs(diff)}pt`)
       } else {
-        showToast('✅ 完了！')
+        showToast('✅ 完了！予定通り！')
       }
     }
   }
@@ -163,11 +177,79 @@ export default function Home() {
     await supabase.from('plan_blocks').update({ status: 'skipped' }).eq('id', block.id)
     setTodayBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: 'skipped' } : b))
 
+    const kcal = block.calories || 0
     if (!isExercise) {
-      const kcal = block.calories || 0
       await addToBuffer(kcal)
-      showToast(`🍱 スキップ！メシポ +${kcal}kcal 貯まった`)
+      showToast(`🍱 スキップ！メシポ +${kcal}ptだよ`)
+    } else {
+      await addToBuffer(-kcal)
+      showToast(`😅 運動サボり… メシポ -${kcal}pt`)
     }
+  }
+
+  function openUnplanned() {
+    resetMealComplete()
+    setUnplannedStep('type')
+    setSelectedMealKcal(null)
+    setMealExtraLarge(false)
+    setSelectedUnplannedExercise(null)
+  }
+
+  async function confirmUnplannedMeal() {
+    if (!weekPlan || !user || selectedMealKcal === null) return
+    const category = MEAL_CATEGORIES.find(c => c.kcal === selectedMealKcal)
+    if (!category) return
+    const kcal = selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
+    const name = mealExtraLarge ? `${category.label}（大盛り）` : category.label
+
+    const { data: inserted, error } = await supabase.from('plan_blocks').insert({
+      week_plan_id: weekPlan.id,
+      user_id: user.id,
+      plan_date: today,
+      block_type: 'meal_snack',
+      name,
+      calories: kcal,
+      is_want: false,
+      is_ai_generated: false,
+      is_flexible: false,
+      status: 'done',
+      actual_calories: kcal,
+      sort_order: 999,
+    }).select().single()
+
+    if (error || !inserted) return
+
+    setTodayBlocks(prev => [...prev, inserted as PlanBlock])
+    await addToBuffer(-kcal)
+    showToast(`😅 予定外… メシポ -${kcal}pt`)
+    resetUnplanned()
+  }
+
+  async function confirmUnplannedExercise() {
+    if (!weekPlan || !user || selectedUnplannedExercise === null) return
+    const option = UNPLANNED_EXERCISE_OPTIONS[selectedUnplannedExercise]
+
+    const { data: inserted, error } = await supabase.from('plan_blocks').insert({
+      week_plan_id: weekPlan.id,
+      user_id: user.id,
+      plan_date: today,
+      block_type: option.block_type,
+      name: option.name,
+      calories: option.calories,
+      duration_min: option.duration_min,
+      is_want: false,
+      is_ai_generated: false,
+      is_flexible: false,
+      status: 'done',
+      sort_order: 999,
+    }).select().single()
+
+    if (error || !inserted) return
+
+    setTodayBlocks(prev => [...prev, inserted as PlanBlock])
+    await addToBuffer(option.calories)
+    showToast(`💪 予定外に頑張った！メシポ +${option.calories}pt！`)
+    resetUnplanned()
   }
 
   const doneCount = todayBlocks.filter(b => b.status === 'done').length
@@ -188,6 +270,10 @@ export default function Home() {
   const targetBuffer = buffer?.target_buffer ?? bufferTotal
   const bufferDiff = bufferTotal - targetBuffer
   const isAboveTarget = bufferDiff >= 0
+
+  const selectedMealActual = selectedMealKcal != null
+    ? selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
+    : null
 
   if (loading) {
     return (
@@ -319,6 +405,100 @@ export default function Home() {
           </section>
         )}
 
+        {/* 予定外を記録する */}
+        {weekPlan && (
+          <div className="space-y-3">
+            {!unplannedStep && (
+              <button
+                type="button"
+                onClick={openUnplanned}
+                className="w-full border border-stone-700 text-stone-400 rounded-2xl py-3 text-sm"
+              >
+                ＋ 予定外を記録する
+              </button>
+            )}
+
+            {unplannedStep === 'type' && (
+              <div className="bg-stone-900 rounded-2xl px-4 py-3 space-y-3">
+                <p className="text-stone-400 text-xs">何を記録する？</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setUnplannedStep('meal'); setSelectedMealKcal(null); setMealExtraLarge(false) }}
+                    className="flex-1 bg-stone-800 text-stone-200 text-sm py-2.5 rounded-xl"
+                  >
+                    🍔 予定外に食べた
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setUnplannedStep('exercise'); setSelectedUnplannedExercise(null) }}
+                    className="flex-1 bg-stone-800 text-stone-200 text-sm py-2.5 rounded-xl"
+                  >
+                    🏃 予定外に運動した
+                  </button>
+                </div>
+                <button type="button" onClick={resetUnplanned} className="text-stone-600 text-xs">
+                  キャンセル
+                </button>
+              </div>
+            )}
+
+            {unplannedStep === 'meal' && (
+              <div className="bg-stone-900 rounded-2xl px-4 py-3">
+                <MealCategoryPicker
+                  title="予定外に何を食べた？"
+                  selectedMealKcal={selectedMealKcal}
+                  mealExtraLarge={mealExtraLarge}
+                  selectedActual={selectedMealActual}
+                  onSelectCategory={setSelectedMealKcal}
+                  onToggleExtraLarge={() => setMealExtraLarge(v => !v)}
+                  onConfirm={confirmUnplannedMeal}
+                  onCancel={resetUnplanned}
+                />
+              </div>
+            )}
+
+            {unplannedStep === 'exercise' && (
+              <div className="bg-stone-900 rounded-2xl px-4 py-3 space-y-3">
+                <p className="text-stone-400 text-xs">予定外に何をした？</p>
+                <div className="space-y-2">
+                  {UNPLANNED_EXERCISE_OPTIONS.map((opt, i) => (
+                    <button
+                      key={opt.name}
+                      type="button"
+                      onClick={() => setSelectedUnplannedExercise(i)}
+                      className={`w-full text-left text-xs px-3 py-2.5 rounded-xl border ${
+                        selectedUnplannedExercise === i
+                          ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
+                          : 'bg-stone-800 text-stone-300 border-stone-700'
+                      }`}
+                    >
+                      {opt.name}（+{opt.calories}pt）
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={confirmUnplannedExercise}
+                    disabled={selectedUnplannedExercise === null}
+                    className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
+                  >
+                    確定
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetUnplanned}
+                    className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
+                  >
+                    キャンセル
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* メシポ促しカード */}
         {weekPlan && (
           <div className="bg-stone-900 rounded-2xl px-4 py-3">
@@ -356,6 +536,81 @@ export default function Home() {
           {toast}
         </div>
       )}
+    </div>
+  )
+}
+
+function MealCategoryPicker({
+  title,
+  plannedKcal,
+  selectedMealKcal,
+  mealExtraLarge,
+  selectedActual,
+  onSelectCategory,
+  onToggleExtraLarge,
+  onConfirm,
+  onCancel,
+}: {
+  title: string
+  plannedKcal?: number
+  selectedMealKcal: number | null
+  mealExtraLarge: boolean
+  selectedActual: number | null
+  onSelectCategory: (kcal: number) => void
+  onToggleExtraLarge: () => void
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-stone-400 text-xs">
+        {title}{plannedKcal != null ? `（予定: ${plannedKcal}kcal）` : ''}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {MEAL_CATEGORIES.map(cat => (
+          <button
+            key={cat.label}
+            type="button"
+            onClick={() => onSelectCategory(cat.kcal)}
+            className={`text-xs px-2.5 py-1.5 rounded-xl border ${
+              selectedMealKcal === cat.kcal
+                ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
+                : 'bg-stone-800 text-stone-300 border-stone-700'
+            }`}
+          >
+            {cat.label} {cat.kcal}
+          </button>
+        ))}
+      </div>
+      <label className="flex items-center gap-2 text-stone-400 text-xs cursor-pointer">
+        <input
+          type="checkbox"
+          checked={mealExtraLarge}
+          onChange={onToggleExtraLarge}
+          className="rounded border-stone-600"
+        />
+        大盛り (+{LARGE_EXTRA}kcal)
+      </label>
+      {selectedActual != null && (
+        <p className="text-stone-500 text-xs">合計: {selectedActual}kcal</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={selectedMealKcal == null}
+          className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
+        >
+          確定
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
+        >
+          キャンセル
+        </button>
+      </div>
     </div>
   )
 }
@@ -427,55 +682,18 @@ function BlockCard({
       </div>
 
       {!isExercise && isCompleting && (
-        <div className="mt-3 pt-3 border-t border-stone-800 space-y-3">
-          <p className="text-stone-400 text-xs">
-            何を食べた？（予定: {block.calories}kcal）
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {MEAL_CATEGORIES.map(cat => (
-              <button
-                key={cat.label}
-                type="button"
-                onClick={() => onSelectCategory?.(cat.kcal)}
-                className={`text-xs px-2.5 py-1.5 rounded-xl border ${
-                  selectedMealKcal === cat.kcal
-                    ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
-                    : 'bg-stone-800 text-stone-300 border-stone-700'
-                }`}
-              >
-                {cat.label} {cat.kcal}
-              </button>
-            ))}
-          </div>
-          <label className="flex items-center gap-2 text-stone-400 text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              checked={mealExtraLarge ?? false}
-              onChange={() => onToggleExtraLarge?.()}
-              className="rounded border-stone-600"
-            />
-            大盛り (+{LARGE_EXTRA}kcal)
-          </label>
-          {selectedActual != null && (
-            <p className="text-stone-500 text-xs">合計: {selectedActual}kcal</p>
-          )}
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={onConfirmActual}
-              disabled={selectedMealKcal == null}
-              className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
-            >
-              確定
-            </button>
-            <button
-              type="button"
-              onClick={onCancelComplete}
-              className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
-            >
-              キャンセル
-            </button>
-          </div>
+        <div className="mt-3 pt-3 border-t border-stone-800">
+          <MealCategoryPicker
+            title="何を食べた？"
+            plannedKcal={block.calories}
+            selectedMealKcal={selectedMealKcal ?? null}
+            mealExtraLarge={mealExtraLarge ?? false}
+            selectedActual={selectedActual}
+            onSelectCategory={onSelectCategory!}
+            onToggleExtraLarge={onToggleExtraLarge!}
+            onConfirm={onConfirmActual!}
+            onCancel={onCancelComplete!}
+          />
         </div>
       )}
     </div>
