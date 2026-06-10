@@ -4,21 +4,42 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { PlanBlock, WeekPlan, CalorieBuffer, BLOCK_LABELS, MEAL_TYPES, EXERCISE_TYPES, BlockType } from '@/types'
-import { getWeekStart, formatDate, getDayLabel, toBeerCount, toRamenCount } from '@/lib/calories'
+import { getWeekStart, formatDate, toBeerCount } from '@/lib/calories'
 
 const MEAL_ORDER: BlockType[] = ['meal_morning', 'meal_lunch', 'meal_snack', 'meal_dinner', 'meal_drinks']
 const EXERCISE_ORDER: BlockType[] = ['exercise_weights', 'exercise_cardio', 'exercise_sport']
+
+const MEAL_CATEGORIES = [
+  { label: 'ヘルシー', kcal: 400 },
+  { label: '普通', kcal: 600 },
+  { label: '和食', kcal: 650 },
+  { label: '洋食', kcal: 750 },
+  { label: 'ジャンキー', kcal: 900 },
+] as const
+
+const LARGE_EXTRA = 200
+
+const BELOW_TARGET_MESSAGES = [
+  '🏃 30分歩くと +150pt だよ',
+  '🥗 夜をヘルシーにすると +200pt になるよ',
+] as const
+
+type BufferWithTarget = CalorieBuffer & { target_buffer?: number }
 
 export default function Home() {
   const router = useRouter()
   const [user, setUser] = useState<any>(null)
   const [todayBlocks, setTodayBlocks] = useState<PlanBlock[]>([])
   const [weekPlan, setWeekPlan] = useState<WeekPlan | null>(null)
-  const [userBaseCalories, setUserBaseCalories] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
-  const [buffer, setBuffer] = useState<CalorieBuffer | null>(null)
+  const [buffer, setBuffer] = useState<BufferWithTarget | null>(null)
   const [toast, setToast] = useState<string | null>(null)
-  const [eodDismissed, setEodDismissed] = useState(false)
+  const [completingBlockId, setCompletingBlockId] = useState<string | null>(null)
+  const [selectedMealKcal, setSelectedMealKcal] = useState<number | null>(null)
+  const [mealExtraLarge, setMealExtraLarge] = useState(false)
+  const [encourageMsg] = useState(
+    () => BELOW_TARGET_MESSAGES[Math.floor(Math.random() * BELOW_TARGET_MESSAGES.length)]
+  )
   const today = formatDate(new Date())
 
   useEffect(() => {
@@ -30,11 +51,9 @@ export default function Home() {
   }, [])
 
   async function loadData(userId: string) {
-    const weekStartDate = getWeekStart()
-    const weekStart = formatDate(weekStartDate)
-    const weekEnd = formatDate(new Date(weekStartDate.getTime() + 6 * 86400000))
+    const weekStart = formatDate(getWeekStart())
 
-    const [{ data: plan }, { data: blocks }, { data: profile }] = await Promise.all([
+    const [{ data: plan }, { data: blocks }] = await Promise.all([
       supabase.from('week_plans')
         .select('*')
         .eq('user_id', userId)
@@ -45,20 +64,17 @@ export default function Home() {
         .eq('user_id', userId)
         .eq('plan_date', today)
         .order('sort_order'),
-      supabase.from('user_profiles')
-        .select('base_calories')
-        .eq('id', userId)
-        .maybeSingle(),
     ])
 
     setWeekPlan(plan)
     setTodayBlocks(blocks || [])
-    setUserBaseCalories(profile?.base_calories ?? null)
 
     if (plan) {
       const { data: buf } = await supabase
         .from('calorie_buffers').select('*').eq('week_plan_id', plan.id).maybeSingle()
       setBuffer(buf ?? null)
+    } else {
+      setBuffer(null)
     }
     setLoading(false)
   }
@@ -79,13 +95,45 @@ export default function Home() {
       )
       .select()
       .maybeSingle()
-    setBuffer(data ?? { ...(buffer as CalorieBuffer), total_buffer: newTotal })
+    setBuffer(data ?? { ...(buffer as BufferWithTarget), total_buffer: newTotal })
   }
 
-  async function markDone(block: PlanBlock) {
+  function resetMealComplete() {
+    setCompletingBlockId(null)
+    setSelectedMealKcal(null)
+    setMealExtraLarge(false)
+  }
+
+  function handleDoneClick(block: PlanBlock) {
     const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
-    await supabase.from('plan_blocks').update({ status: 'done' }).eq('id', block.id)
-    setTodayBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: 'done' } : b))
+    if (isExercise) {
+      markDone(block)
+      return
+    }
+    setCompletingBlockId(block.id)
+    setSelectedMealKcal(null)
+    setMealExtraLarge(false)
+  }
+
+  async function confirmMealDone(block: PlanBlock) {
+    if (selectedMealKcal === null) return
+    const actual = selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
+    await markDone(block, actual)
+    resetMealComplete()
+  }
+
+  async function markDone(block: PlanBlock, actualCalories?: number) {
+    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
+    const updatePayload = isExercise
+      ? { status: 'done' as const }
+      : { status: 'done' as const, actual_calories: actualCalories ?? block.calories }
+
+    await supabase.from('plan_blocks').update(updatePayload).eq('id', block.id)
+    setTodayBlocks(prev => prev.map(b =>
+      b.id === block.id
+        ? { ...b, status: 'done', actual_calories: isExercise ? b.actual_calories : (actualCalories ?? b.calories) }
+        : b
+    ))
 
     if (isExercise) {
       const kcal = block.calories || 0
@@ -95,12 +143,17 @@ export default function Home() {
         ? `💪 メシポ +${kcal}kcal！ビール${beer}本分貯まった`
         : `💪 メシポ +${kcal}kcal 貯まった！`)
     } else {
-      const actual = block.actual_calories ?? block.calories
+      const actual = actualCalories ?? block.calories
       const planned = block.calories
-      if (actual < planned) {
-        const diff = planned - actual
+      const diff = planned - actual
+      if (diff > 0) {
         await addToBuffer(diff)
-        showToast(`🥗 メシポ +${diff}kcal！`)
+        showToast(`🥗 えらい！メシポ +${diff}pt！`)
+      } else if (diff < 0) {
+        await addToBuffer(diff)
+        showToast(`😅 メシポ -${Math.abs(diff)}pt`)
+      } else {
+        showToast('✅ 完了！')
       }
     }
   }
@@ -117,12 +170,6 @@ export default function Home() {
     }
   }
 
-  const caloriesIn = todayBlocks
-    .filter(b => MEAL_TYPES.includes(b.block_type as BlockType))
-    .reduce((sum, b) => sum + (b.calories || 0), 0)
-  const caloriesBurned = todayBlocks
-    .filter(b => EXERCISE_TYPES.includes(b.block_type as BlockType))
-    .reduce((sum, b) => sum + (b.calories || 0), 0)
   const doneCount = todayBlocks.filter(b => b.status === 'done').length
   const wantDone = todayBlocks.filter(b => b.is_want && b.status === 'done').length
   const wantTotal = todayBlocks.filter(b => b.is_want).length
@@ -137,22 +184,10 @@ export default function Home() {
     blocks: todayBlocks.filter(b => b.block_type === type),
   })).filter(g => g.blocks.length > 0)
 
-  // 今日の残り予定カロリー・メシポ
-  const todayRemainingKcal = todayBlocks
-    .filter(b => b.status === 'planned' && (MEAL_TYPES as string[]).includes(b.block_type))
-    .reduce((s, b) => s + (b.calories || 0), 0)
   const bufferTotal = buffer?.total_buffer ?? 0
-
-  const allTodayDone = todayBlocks.length > 0 && todayBlocks.every(b => b.status !== 'planned')
-  const hasLateIncomplete = new Date().getHours() >= 21 && todayBlocks.some(b => b.status === 'planned')
-  const showEOD = !eodDismissed && todayBlocks.length > 0 && (allTodayDone || hasLateIncomplete)
-  const todayActualCalIn = todayBlocks
-    .filter(b => (MEAL_TYPES as string[]).includes(b.block_type) && b.status === 'done')
-    .reduce((s, b) => s + ((b.actual_calories ?? b.calories) || 0), 0)
-  const todayActualBurned = todayBlocks
-    .filter(b => (EXERCISE_TYPES as string[]).includes(b.block_type) && b.status === 'done')
-    .reduce((s, b) => s + (b.calories || 0), 0)
-  const todayOverage = (todayActualCalIn - todayActualBurned) - (userBaseCalories ?? 2200)
+  const targetBuffer = buffer?.target_buffer ?? bufferTotal
+  const bufferDiff = bufferTotal - targetBuffer
+  const isAboveTarget = bufferDiff >= 0
 
   if (loading) {
     return (
@@ -213,54 +248,22 @@ export default function Home() {
           </div>
         )}
 
-        {/* 今日の残り・メシポバナー */}
-        {weekPlan && (todayRemainingKcal > 0 || bufferTotal >= 300) && (
-          <div className="space-y-2">
-            {todayRemainingKcal > 0 && (
-              <div className="bg-stone-900 rounded-2xl px-4 py-3">
-                <p className="text-stone-500 text-xs mb-0.5">今日の残り</p>
-                <p className="text-stone-100 font-bold">{todayRemainingKcal.toLocaleString()}kcal</p>
-                <p className="text-stone-600 text-[11px] mt-0.5">予定メニューはまだあるよ</p>
-              </div>
-            )}
-            {bufferTotal >= 300 && (
-              <div className="bg-amber-400/15 border border-amber-400/30 rounded-2xl px-4 py-3">
-                <p className="text-amber-400 font-bold text-sm">🍺 メシポ残高 {bufferTotal.toLocaleString()}pt</p>
-                <p className="text-stone-300 text-xs mt-0.5">
-                  {(() => {
-                    const beer = toBeerCount(bufferTotal)
-                    const ramen = toRamenCount(bufferTotal)
-                    const parts: string[] = []
-                    if (ramen > 0) parts.push(`ラーメン${ramen}杯分`)
-                    if (beer > 0) parts.push(`ビール${beer}本分`)
-                    return parts.length > 0 ? parts.join(' or ') + ' 追加できるよ' : `${bufferTotal}kcal`
-                  })()}
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* カロリーサマリ */}
-        {todayBlocks.length > 0 && (
-          <div className="grid grid-cols-3 gap-3">
-            <div className="bg-stone-900 rounded-2xl p-4 text-center">
-              <p className="text-stone-500 text-xs mb-1">摂取</p>
-              <p className="text-xl font-bold text-rose-400">{caloriesIn}</p>
-              <p className="text-stone-600 text-xs">kcal</p>
-            </div>
-            <div className="bg-stone-900 rounded-2xl p-4 text-center">
-              <p className="text-stone-500 text-xs mb-1">消費</p>
-              <p className="text-xl font-bold text-emerald-400">{caloriesBurned}</p>
-              <p className="text-stone-600 text-xs">kcal</p>
-            </div>
-            <div className="bg-stone-900 rounded-2xl p-4 text-center">
-              <p className="text-stone-500 text-xs mb-1">差引</p>
-              <p className={`text-xl font-bold ${caloriesIn - caloriesBurned > 2500 ? 'text-rose-400' : 'text-amber-400'}`}>
-                {caloriesIn - caloriesBurned}
-              </p>
-              <p className="text-stone-600 text-xs">kcal</p>
-            </div>
+        {/* メシポバナー（常時表示・bufferがある場合のみ） */}
+        {buffer && (
+          <div className={`rounded-2xl px-4 py-3 border ${
+            isAboveTarget
+              ? 'bg-amber-400/10 border-amber-400/30'
+              : 'bg-rose-950/30 border-rose-800/50'
+          }`}>
+            <p className={`font-bold text-sm ${isAboveTarget ? 'text-amber-400' : 'text-rose-400'}`}>
+              🪙 メシポ {bufferTotal.toLocaleString()}pt
+            </p>
+            <p className={`text-xs mt-1 ${isAboveTarget ? 'text-amber-400/80' : 'text-rose-400/80'}`}>
+              目標ライン {targetBuffer.toLocaleString()}pt{' '}
+              {isAboveTarget
+                ? `▲ +${bufferDiff.toLocaleString()}pt 順調！`
+                : `▼ ${bufferDiff.toLocaleString()}pt 挽回しよう`}
+            </p>
           </div>
         )}
 
@@ -276,7 +279,14 @@ export default function Home() {
                     <BlockCard
                       key={block.id}
                       block={block}
-                      onDone={() => markDone(block)}
+                      isCompleting={completingBlockId === block.id}
+                      selectedMealKcal={selectedMealKcal}
+                      mealExtraLarge={mealExtraLarge}
+                      onSelectCategory={setSelectedMealKcal}
+                      onToggleExtraLarge={() => setMealExtraLarge(v => !v)}
+                      onDone={() => handleDoneClick(block)}
+                      onConfirmActual={() => confirmMealDone(block)}
+                      onCancelComplete={resetMealComplete}
                       onSkip={() => markSkipped(block)}
                     />
                   ))}
@@ -298,7 +308,8 @@ export default function Home() {
                     <BlockCard
                       key={block.id}
                       block={block}
-                      onDone={() => markDone(block)}
+                      isCompleting={false}
+                      onDone={() => handleDoneClick(block)}
                       onSkip={() => markSkipped(block)}
                     />
                   ))}
@@ -306,6 +317,17 @@ export default function Home() {
               ))}
             </div>
           </section>
+        )}
+
+        {/* メシポ促しカード */}
+        {weekPlan && (
+          <div className="bg-stone-900 rounded-2xl px-4 py-3">
+            <p className="text-stone-400 text-sm">
+              {buffer && isAboveTarget
+                ? '🎉 今週は順調！このまま行こう'
+                : encourageMsg}
+            </p>
+          </div>
         )}
 
         {/* ズレたボタン */}
@@ -316,51 +338,6 @@ export default function Home() {
           >
             📝 予定と違うことがあった
           </button>
-        )}
-
-        {/* 1日終わりバナー */}
-        {showEOD && (
-          <div className={`rounded-3xl p-5 ${todayOverage >= 300 ? 'bg-rose-950/50 border border-rose-800' : 'bg-emerald-950/50 border border-emerald-800'}`}>
-            {todayOverage >= 300 ? (
-              <>
-                <p className="text-rose-400 font-bold text-base mb-1">
-                  今日 +{todayOverage}kcal オーバーかも
-                </p>
-                <p className="text-stone-300 text-sm mb-3">
-                  明日に繰り越す？ズレを記録しておこう
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => router.push('/log/deviation')}
-                    className="bg-rose-500 text-white font-bold text-sm px-4 py-2 rounded-xl"
-                  >
-                    ズレを記録する
-                  </button>
-                  <button
-                    onClick={() => setEodDismissed(true)}
-                    className="text-stone-500 text-sm px-3 py-2"
-                  >
-                    閉じる
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-emerald-400 font-bold text-base mb-1">
-                  🎉 今日もよく頑張った！
-                </p>
-                <p className="text-stone-300 text-sm mb-3">
-                  メシポ残高: {(buffer?.total_buffer ?? 0).toLocaleString()}pt
-                </p>
-                <button
-                  onClick={() => setEodDismissed(true)}
-                  className="text-stone-500 text-sm"
-                >
-                  閉じる
-                </button>
-              </>
-            )}
-          </div>
         )}
       </main>
       </div>
@@ -385,49 +362,122 @@ export default function Home() {
 
 function BlockCard({
   block,
+  isCompleting,
+  selectedMealKcal,
+  mealExtraLarge,
+  onSelectCategory,
+  onToggleExtraLarge,
   onDone,
+  onConfirmActual,
+  onCancelComplete,
   onSkip,
 }: {
   block: PlanBlock
+  isCompleting?: boolean
+  selectedMealKcal?: number | null
+  mealExtraLarge?: boolean
+  onSelectCategory?: (kcal: number) => void
+  onToggleExtraLarge?: () => void
   onDone: () => void
+  onConfirmActual?: () => void
+  onCancelComplete?: () => void
   onSkip: () => void
 }) {
   const isDone = block.status === 'done'
   const isSkipped = block.status === 'skipped'
+  const isExercise = EXERCISE_TYPES.includes(block.block_type as BlockType)
+  const selectedActual = selectedMealKcal != null
+    ? selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
+    : null
 
   return (
-    <div className={`bg-stone-900 rounded-2xl px-4 py-3 flex items-center gap-3 ${isDone ? 'opacity-50' : ''}`}>
-      {block.is_want && (
-        <span className="text-amber-400 text-xs font-bold">★</span>
-      )}
-      <div className="flex-1 min-w-0">
-        <p className={`font-medium text-sm ${isDone ? 'line-through text-stone-500' : 'text-stone-100'}`}>
-          {block.name}
-        </p>
-        <p className="text-stone-600 text-xs mt-0.5">
-          {EXERCISE_TYPES.includes(block.block_type as BlockType)
-            ? `消費 ${block.calories}kcal${block.duration_min ? ` · ${block.duration_min}分` : ''}`
-            : `${block.calories}kcal`}
-        </p>
+    <div className={`bg-stone-900 rounded-2xl px-4 py-3 ${isDone ? 'opacity-50' : ''}`}>
+      <div className="flex items-center gap-3">
+        {block.is_want && (
+          <span className="text-amber-400 text-xs font-bold">★</span>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className={`font-medium text-sm ${isDone ? 'line-through text-stone-500' : 'text-stone-100'}`}>
+            {block.name}
+          </p>
+          <p className="text-stone-600 text-xs mt-0.5">
+            {isExercise
+              ? `消費 ${block.calories}kcal${block.duration_min ? ` · ${block.duration_min}分` : ''}`
+              : `${block.calories}kcal`}
+          </p>
+        </div>
+        {!isDone && !isSkipped && !isCompleting && (
+          <div className="flex gap-2">
+            <button
+              onClick={onSkip}
+              className="text-stone-600 text-xs px-2 py-1 rounded-lg"
+            >
+              スキップ
+            </button>
+            <button
+              onClick={onDone}
+              className="bg-amber-400 text-stone-950 text-xs font-bold px-3 py-1.5 rounded-xl"
+            >
+              完了
+            </button>
+          </div>
+        )}
+        {isDone && <span className="text-emerald-400 text-lg">✓</span>}
+        {isSkipped && <span className="text-stone-600 text-xs">スキップ</span>}
       </div>
-      {!isDone && !isSkipped && (
-        <div className="flex gap-2">
-          <button
-            onClick={onSkip}
-            className="text-stone-600 text-xs px-2 py-1 rounded-lg"
-          >
-            スキップ
-          </button>
-          <button
-            onClick={onDone}
-            className="bg-amber-400 text-stone-950 text-xs font-bold px-3 py-1.5 rounded-xl"
-          >
-            完了
-          </button>
+
+      {!isExercise && isCompleting && (
+        <div className="mt-3 pt-3 border-t border-stone-800 space-y-3">
+          <p className="text-stone-400 text-xs">
+            何を食べた？（予定: {block.calories}kcal）
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {MEAL_CATEGORIES.map(cat => (
+              <button
+                key={cat.label}
+                type="button"
+                onClick={() => onSelectCategory?.(cat.kcal)}
+                className={`text-xs px-2.5 py-1.5 rounded-xl border ${
+                  selectedMealKcal === cat.kcal
+                    ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
+                    : 'bg-stone-800 text-stone-300 border-stone-700'
+                }`}
+              >
+                {cat.label} {cat.kcal}
+              </button>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-stone-400 text-xs cursor-pointer">
+            <input
+              type="checkbox"
+              checked={mealExtraLarge ?? false}
+              onChange={() => onToggleExtraLarge?.()}
+              className="rounded border-stone-600"
+            />
+            大盛り (+{LARGE_EXTRA}kcal)
+          </label>
+          {selectedActual != null && (
+            <p className="text-stone-500 text-xs">合計: {selectedActual}kcal</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onConfirmActual}
+              disabled={selectedMealKcal == null}
+              className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
+            >
+              確定
+            </button>
+            <button
+              type="button"
+              onClick={onCancelComplete}
+              className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
+            >
+              キャンセル
+            </button>
+          </div>
         </div>
       )}
-      {isDone && <span className="text-emerald-400 text-lg">✓</span>}
-      {isSkipped && <span className="text-stone-600 text-xs">スキップ</span>}
     </div>
   )
 }

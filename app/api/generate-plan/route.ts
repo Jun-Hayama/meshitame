@@ -1,7 +1,47 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 // 空きスロットのみ生成。各ブロックは必須フィールドのみ。summaryは50文字以内。
 const OUTPUT_SCHEMA = '{"summary":"50文字以内","blocks":[{"plan_date":"YYYY-MM-DD","block_type":"meal_morning|meal_lunch|meal_snack|meal_dinner|meal_drinks|exercise_weights|exercise_cardio|exercise_sport","name":"名前","calories":数値,"duration_min":null,"is_want":false,"is_flexible":true,"sort_order":0,"emoji":"絵文字"}]}'
+
+// 今日の曜日から土曜までの残り日数（土曜含む）
+// 日曜(0)=0, 月曜(1)=6, 水曜(3)=4, 土曜(6)=1
+function calcRemainingDays(): number {
+  const dayOfWeek = new Date().getDay()
+  return dayOfWeek === 0 ? 0 : 7 - dayOfWeek
+}
+
+// メシポ初期値を計算する
+// 差分0.5kg以上→360pt/週、0.5kg未満→180pt/週 を残り日数で按分
+function calcInitialBuffer(weightKg: number, targetWeightKg: number): number {
+  const diff = weightKg - targetWeightKg
+  const basePt = diff >= 0.5 ? 360 : 180
+  const remainingDays = calcRemainingDays()
+  return Math.floor(basePt * remainingDays / 7)
+}
+
+async function upsertCalorieBuffer(
+  weekPlanId: string,
+  userId: string,
+  totalBuffer: number,
+): Promise<void> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (!supabaseUrl || !supabaseKey) return
+
+  const supabase = createClient(supabaseUrl, supabaseKey)
+  await supabase.from('calorie_buffers').upsert(
+    {
+      user_id: userId,
+      week_plan_id: weekPlanId,
+      total_buffer: totalBuffer,
+      initial_buffer: totalBuffer,
+      target_buffer: totalBuffer,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'week_plan_id' },
+  )
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json()
@@ -97,6 +137,23 @@ JSON形式のみ（前後に説明文・コードブロック不要）: ${OUTPUT
       }
 
       const parsed = JSON.parse(jsonStr)
+
+      // メシポ初期値の計算と保存
+      const { weekPlanId, userProfile } = body
+      if (
+        weekPlanId &&
+        userProfile?.id &&
+        userProfile?.weight_kg != null &&
+        userProfile?.target_weight_kg != null
+      ) {
+        const initialBuffer = calcInitialBuffer(
+          userProfile.weight_kg as number,
+          userProfile.target_weight_kg as number,
+        )
+        await upsertCalorieBuffer(weekPlanId as string, userProfile.id as string, initialBuffer)
+        return NextResponse.json({ ...parsed, initialBuffer })
+      }
+
       return NextResponse.json(parsed)
     } catch {
       console.error('[generate-plan] JSON parse failed. raw:', text)
