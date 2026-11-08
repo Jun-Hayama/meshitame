@@ -113,7 +113,8 @@ export interface WeightLog {
   weight_kg: number
   waist_cm?: number
   note?: string
-  measured_at: string
+  measured_at: string // YYYY-MM-DD（日本時間）。1人1日1件
+  created_at?: string
 }
 
 export interface CalorieBuffer {
@@ -372,4 +373,97 @@ export interface MeshipoGauge {
   lightMealsNeeded: number // 今月あと必要な軽め（0なら軽めなしでOK）
   fillRatio: number // ゲージの塗り（0〜1）
   paceRatio: number // ペースの目印の位置（0〜1）
+}
+
+// ===== フェーズ2 体重・7日平均 =====
+
+// calcWeightAverage の結果
+export interface WeightAverage {
+  avgKg: number | null // 記録が1件もなければ null
+  count: number // 7日間にあった記録の数
+  isReference: boolean // 3件未満（参考値）
+}
+
+// calcWeekOverWeek の結果
+export interface WeekOverWeek {
+  diffKg: number | null // その日の7日平均 − 7日前の7日平均（どちらかが無ければ null）
+  isReference: boolean // どちらかが参考値
+}
+
+// ===== フェーズ2 月の割り直し（11-3） =====
+
+// start：開始月（初回設定の値） / plan：月初の7日平均が参考値なので計画どおり
+// rebalanced：月初の7日平均で割り直し / finished：期間後 / provisional：まだ来ていない月（仮に計画どおり）
+export type MonthTargetBasis = 'start' | 'plan' | 'rebalanced' | 'finished' | 'provisional'
+
+// 画面が使う月の目標（useMonthTargets の結果）。CurrentMonthTargets に割り直しの情報を足したもの
+export interface MonthTargets extends CurrentMonthTargets {
+  basis: MonthTargetBasis
+  startAvgKg: number | null // 月初の7日平均（前月の最後の7日間）
+  startAvgCount: number
+  gateEndTargetKg: number | null // そのゲートの終わりの目標体重
+  remainingMonths: number | null // ゲートの残り月数（その月を含む）
+  ahead: boolean // 目標kgが0以下（ペースより先に進んでいる）→ 1日の貯金は0
+  shortfallKg: number // capped のとき、このままだとゲートに届かない見込みのkg
+  cappedDismissed: boolean // capped の案内で「そのまま続ける」を選んだ
+}
+
+// monthly_targets テーブルの1行
+export interface MonthlyTargetRow {
+  id: string
+  user_id: string
+  goal_plan_id: string
+  year: number
+  month: number
+  month_number: number
+  gate_index: number
+  basis: 'plan' | 'rebalanced'
+  start_avg_kg: number | null
+  start_avg_count: number
+  gate_end_target_kg: number
+  remaining_months: number
+  monthly_target_kg: number
+  daily_saving_kcal: number
+  uncapped_kcal: number
+  cap_kcal: number
+  capped: boolean
+  shortfall_kg: number
+  capped_dismissed: boolean
+  created_at: string
+}
+
+// ===== フェーズ2 進捗チャート（11-4） =====
+
+export type ChartPeriod = '1m' | '3m' | 'all'
+
+export interface WeightChartPoint {
+  date: string // YYYY-MM-DD
+  kg: number
+}
+
+// 目標ラインの区切り（開始日と各ゲートの終わり）
+export interface TargetLinePoint extends WeightChartPoint {
+  gateIndex: number | null // 開始点は null
+}
+
+export interface WeightChartData {
+  from: string
+  to: string
+  days: number // from〜to の日数（両端を含む）
+  dailyPoints: WeightChartPoint[] // 毎日の体重
+  averageSegments: WeightChartPoint[][] // 7日平均の線（7日間に記録が無い日で途切れる）
+  targetLine: WeightChartPoint[] // 範囲内の目標ライン（両端は補間した値）
+  gateMarkers: { date: string; gateIndex: number }[] // 範囲内のゲートの区切り
+  yMin: number
+  yMax: number
+}
+
+// ===== フェーズ2 ゲート達成（11-5） =====
+
+export type MilestoneKind = `gate${number}` | 'loss3' | 'loss5'
+
+export interface Milestone {
+  kind: MilestoneKind
+  title: string // 「ゲート1達成！」「開始から3%減」
+  message: string
 }

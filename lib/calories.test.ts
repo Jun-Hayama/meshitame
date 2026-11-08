@@ -36,6 +36,25 @@ import {
   getRecordableDateRange,
   isRecordableDate,
   formatMonthDayWeekday,
+  parseWeightInput,
+  calcWeightAverage,
+  calcWeekOverWeek,
+  formatSignedKg,
+  calcPlanMonthTargets,
+  decideMonthTargets,
+  getMonthStartAverageDate,
+  getMonthTargetMode,
+  monthTargetsToRow,
+  monthTargetsFromRow,
+  calcExtendedPeriodMonths,
+  daysBetween,
+  getPlanMonthEndDate,
+  buildTargetLine,
+  getTargetWeightOn,
+  calcTargetGap,
+  getChartRange,
+  buildWeightChartData,
+  detectNewMilestones,
 } from '@/lib/calories'
 import type { MonthlyWantRow, WantEntry } from '@/types'
 import { CHEAT_ITEMS } from '@/lib/cheatItems'
@@ -611,5 +630,304 @@ describe('過去の日の記録（10-7）', () => {
 
   it('何も記録しない日は目安どおり（経過日数×150だけ貯まる）', () => {
     expect(calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-11-08', mealLogs: [], exerciseLogs: [] })).toBe(1200)
+  })
+})
+
+describe('parseWeightInput（11-1）', () => {
+  it('0.1kg単位に丸める。カンマも小数点として読む', () => {
+    expect(parseWeightInput('103.24')).toBe(103.2)
+    expect(parseWeightInput(' 98,7 ')).toBe(98.7)
+  })
+  it('空・数字でない・範囲外は null', () => {
+    expect(parseWeightInput('')).toBeNull()
+    expect(parseWeightInput('abc')).toBeNull()
+    expect(parseWeightInput('29.9')).toBeNull()
+    expect(parseWeightInput('300.1')).toBeNull()
+  })
+})
+
+describe('calcWeightAverage（11-2）', () => {
+  const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+
+  it('記録が飛び飛びでも、7日間にある記録だけで平均する', () => {
+    const logs = [w('2026-11-01', 110), w('2026-11-02', 104), w('2026-11-05', 103), w('2026-11-08', 102)]
+    // 11/8 を含む7日間 = 11/2〜11/8。11/1 は入らない
+    const avg = calcWeightAverage(logs, '2026-11-08')
+    expect(avg.count).toBe(3)
+    expect(avg.avgKg).toBeCloseTo(103)
+    expect(avg.isReference).toBe(false)
+  })
+
+  it('3件未満は参考値。0件なら null', () => {
+    const logs = [w('2026-11-06', 103), w('2026-11-08', 102)]
+    expect(calcWeightAverage(logs, '2026-11-08')).toEqual({ avgKg: 102.5, count: 2, isReference: true })
+    expect(calcWeightAverage(logs, '2026-11-20')).toEqual({ avgKg: null, count: 0, isReference: true })
+  })
+
+  it('月をまたいでも直近7日間で数える（12/2 → 11/26〜12/2）', () => {
+    const logs = [w('2026-11-25', 120), w('2026-11-26', 100), w('2026-11-30', 101), w('2026-12-02', 102)]
+    const avg = calcWeightAverage(logs, '2026-12-02')
+    expect(avg.count).toBe(3)
+    expect(avg.avgKg).toBeCloseTo(101)
+  })
+
+  it('DBの numeric が文字列で返っても数値として平均する', () => {
+    const logs = [{ measured_at: '2026-11-08', weight_kg: '102.4' as unknown as number }]
+    expect(calcWeightAverage(logs, '2026-11-08').avgKg).toBeCloseTo(102.4)
+  })
+})
+
+describe('calcWeekOverWeek（11-2）', () => {
+  const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+
+  it('その日の7日平均 − 7日前の7日平均', () => {
+    const logs = [
+      w('2026-11-02', 104), w('2026-11-04', 104), w('2026-11-06', 104), // 11/1〜11/7 平均104
+      w('2026-11-09', 103.6), w('2026-11-11', 103.6), w('2026-11-13', 103.6), // 11/8〜11/14 平均103.6
+    ]
+    const wow = calcWeekOverWeek(logs, '2026-11-14')
+    expect(wow.diffKg).toBeCloseTo(-0.4)
+    expect(wow.isReference).toBe(false)
+  })
+
+  it('どちらかの週に記録が無ければ null、どちらかが3件未満なら参考値', () => {
+    const logs = [w('2026-11-06', 104), w('2026-11-09', 103), w('2026-11-11', 103), w('2026-11-13', 103)]
+    expect(calcWeekOverWeek(logs, '2026-11-14').isReference).toBe(true)
+    expect(calcWeekOverWeek(logs, '2026-11-14').diffKg).toBeCloseTo(-1)
+    expect(calcWeekOverWeek(logs, '2026-11-20').diffKg).toBeNull()
+  })
+})
+
+describe('formatSignedKg', () => {
+  it('0.1kg単位で符号つき。0は ±0.0kg', () => {
+    expect(formatSignedKg(-0.44)).toBe('−0.4kg')
+    expect(formatSignedKg(0.25)).toBe('+0.3kg')
+    expect(formatSignedKg(-0.04)).toBe('±0.0kg')
+  })
+})
+
+describe('月の割り直し（11-3）', () => {
+  // 104kg・12ヶ月で15kg → ゲート1 −5.25kg（98.75kg）、ゲート2 −4.5kg（94.25kg）…
+  // 上限 = min(750, 2800 − 2000 − 150) = 650kcal
+  const plan = {
+    start_date: '2026-11-08',
+    period_months: 12,
+    gates: calcGates(104, 15, 12).gates,
+    tdee: 2800,
+    bmr: 2000,
+  }
+  const avg = (avgKg: number | null, count = 7) => ({ avgKg, count, isReference: count < 3 })
+
+  it('月初の7日平均は前月の最後の7日間（前月の最終日まで）', () => {
+    expect(getMonthStartAverageDate(2027, 1)).toBe('2026-12-31')
+    expect(getMonthStartAverageDate(2027, 3)).toBe('2027-02-28')
+  })
+
+  it('開始月は初回設定の値（保存しない）', () => {
+    const t = decideMonthTargets(plan, 2026, 11, avg(103))
+    expect(t.basis).toBe('start')
+    expect(t.dailySaving).toEqual(calcPlanMonthTargets(plan, 2026, 11).dailySaving)
+  })
+
+  it('計画どおりのペースなら、計画どおりの値になる', () => {
+    // 1ヶ月目で −1.75kg → 102.25kg。（102.25 − 98.75）÷ 残り2ヶ月 = 1.75kg
+    const t = decideMonthTargets(plan, 2026, 12, avg(102.25))
+    expect(t.basis).toBe('rebalanced')
+    expect(t.monthlyTargetKg).toBeCloseTo(1.75)
+    expect(t.dailySaving.savingKcal).toBe(calcPlanMonthTargets(plan, 2026, 12).dailySaving.savingKcal)
+    expect(t.ahead).toBe(false)
+  })
+
+  it('ゲート1の2ヶ月目：月初の7日平均から目標kgを出す', () => {
+    // （103.0 − 98.75）÷ 残り2ヶ月 = 2.125kg → 2.125 × 7200 ÷ 31日 = 493.5 → 494kcal
+    const t = decideMonthTargets(plan, 2026, 12, avg(103))
+    expect(t.monthNumber).toBe(2)
+    expect(t.gateIndex).toBe(1)
+    expect(t.gateEndTargetKg).toBeCloseTo(98.75)
+    expect(t.remainingMonths).toBe(2)
+    expect(t.monthlyTargetKg).toBeCloseTo(2.125)
+    expect(t.dailySaving.savingKcal).toBe(494)
+    expect(t.dailyIntakeKcal).toBe(2800 - 494)
+    expect(t.startAvgKg).toBe(103)
+  })
+
+  it('ゲート2の1ヶ月目：ゲート2の終わりの目標体重 ÷ 残り3ヶ月', () => {
+    const t = decideMonthTargets(plan, 2027, 2, avg(98.75))
+    expect(t.gateIndex).toBe(2)
+    expect(t.gateEndTargetKg).toBeCloseTo(94.25)
+    expect(t.remainingMonths).toBe(3)
+    expect(t.monthlyTargetKg).toBeCloseTo(1.5)
+  })
+
+  it('先行：目標kgが0以下なら1日の貯金0（維持）', () => {
+    const t = decideMonthTargets(plan, 2026, 12, avg(98.5))
+    expect(t.ahead).toBe(true)
+    expect(t.monthlyTargetKg).toBeLessThan(0)
+    expect(t.dailySaving.savingKcal).toBe(0)
+    expect(t.dailySaving.capped).toBe(false)
+    expect(t.dailyIntakeKcal).toBe(2800)
+  })
+
+  it('遅れて capped：上限で止め、届かない見込みkgを出す', () => {
+    // ゲート1の最終月に104kgのまま → 5.25kg ÷ 1ヶ月 → 1219kcal/日 > 上限650
+    const t = decideMonthTargets(plan, 2027, 1, avg(104))
+    expect(t.dailySaving.capped).toBe(true)
+    expect(t.dailySaving.savingKcal).toBe(650)
+    expect(t.dailySaving.uncappedKcal).toBe(1219)
+    // （1219 − 650）× 31日 × 1ヶ月 ÷ 7200
+    expect(t.shortfallKg).toBeCloseTo((569 * 31) / 7200)
+  })
+
+  it('月初の7日平均が3件未満なら計画どおり', () => {
+    const t = decideMonthTargets(plan, 2026, 12, avg(110, 2))
+    expect(t.basis).toBe('plan')
+    expect(t.dailySaving).toEqual(calcPlanMonthTargets(plan, 2026, 12).dailySaving)
+    expect(t.startAvgCount).toBe(2)
+  })
+
+  it('期間を過ぎたら finished（貯金0）', () => {
+    const t = decideMonthTargets(plan, 2027, 11, avg(90))
+    expect(t.basis).toBe('finished')
+    expect(t.dailySaving.savingKcal).toBe(0)
+  })
+
+  it('どの月を保存するか：開始月・期間後・まだ来ていない月は保存しない', () => {
+    expect(getMonthTargetMode(plan, 2026, 11, '2026-12-03')).toBe('start')
+    expect(getMonthTargetMode(plan, 2026, 12, '2026-12-03')).toBe('decide')
+    expect(getMonthTargetMode(plan, 2027, 1, '2026-12-03')).toBe('provisional')
+    expect(getMonthTargetMode(plan, 2027, 11, '2027-11-03')).toBe('finished')
+  })
+
+  it('保存した行から同じ値に戻せる', () => {
+    const t = decideMonthTargets(plan, 2027, 1, avg(104))
+    const row = { ...monthTargetsToRow(t, 'u1', 'g1'), id: 'r1', created_at: '' }
+    const back = monthTargetsFromRow(plan, row)
+    expect(back.dailySaving).toEqual(t.dailySaving)
+    expect(back.dailyIntakeKcal).toBe(t.dailyIntakeKcal)
+    expect(back.shortfallKg).toBeCloseTo(t.shortfallKg, 2)
+    expect(back.basis).toBe('rebalanced')
+    expect(() => monthTargetsToRow(decideMonthTargets(plan, 2026, 11, avg(104)), 'u1', 'g1')).toThrow()
+  })
+
+  it('先行の行を読み直しても ahead になる', () => {
+    const t = decideMonthTargets(plan, 2026, 12, avg(98.5))
+    const back = monthTargetsFromRow(plan, { ...monthTargetsToRow(t, 'u1', 'g1'), id: 'r1', created_at: '' })
+    expect(back.ahead).toBe(true)
+  })
+
+  it('期間を延ばす：今の7日平均から目標まで上限ペースで何ヶ月か（3ヶ月単位）', () => {
+    // 15kg ÷（650 × 30.4 ÷ 7200 ≒ 2.74kg/月）≒ 5.5ヶ月 → 6ヶ月
+    expect(calcExtendedPeriodMonths(104, 89, 650)).toBe(6)
+    expect(calcExtendedPeriodMonths(104, 89, 0)).toBeNull()
+  })
+})
+
+describe('進捗チャート（11-4）', () => {
+  const plan = {
+    start_date: '2026-11-08',
+    period_months: 12,
+    start_weight_kg: 104,
+    gates: calcGates(104, 15, 12).gates,
+  }
+
+  it('ゲートの終わり = 開始月から数えて3iヶ月目の月末', () => {
+    expect(getPlanMonthEndDate('2026-11-08', 3)).toBe('2027-01-31')
+    expect(getPlanMonthEndDate('2026-11-08', 6)).toBe('2027-04-30')
+    expect(getPlanMonthEndDate('2026-11-08', 12)).toBe('2027-10-31')
+    expect(getPlanMonthEndDate('2027-12-01', 3)).toBe('2028-02-29') // うるう年
+  })
+
+  it('目標ラインは開始点と各ゲートの終わりを結ぶ', () => {
+    const line = buildTargetLine(plan)
+    expect(line.map((p) => p.date)).toEqual(['2026-11-08', '2027-01-31', '2027-04-30', '2027-07-31', '2027-10-31'])
+    expect(line[1].kg).toBeCloseTo(98.75)
+    expect(line[2].kg).toBeCloseTo(94.25)
+    expect(line[0].gateIndex).toBeNull()
+    expect(line[4].gateIndex).toBe(4)
+  })
+
+  it('区切りと区切りの間は日数で直線に結んだ値', () => {
+    const line = buildTargetLine(plan)
+    // 開始〜ゲート1：84日で −5.25kg。42日目（12/20）はちょうど半分
+    expect(daysBetween('2026-11-08', '2027-01-31')).toBe(84)
+    expect(getTargetWeightOn(line, '2026-12-20')).toBeCloseTo(104 - 5.25 / 2)
+    // ゲート1〜ゲート2（1/31〜4/30、89日で −4.5kg）の30日目
+    expect(getTargetWeightOn(line, '2027-03-02')).toBeCloseTo(98.75 - (4.5 * 30) / 89)
+    // 区切りの日はその目標体重。開始前・終了後は端の値
+    expect(getTargetWeightOn(line, '2027-01-31')).toBeCloseTo(98.75)
+    expect(getTargetWeightOn(line, '2026-11-01')).toBe(104)
+    expect(getTargetWeightOn(line, '2028-01-01')).toBeCloseTo(89)
+  })
+
+  it('目標ラインとの差：マイナスなら先行', () => {
+    const line = buildTargetLine(plan)
+    const ahead = calcTargetGap(101.5, line, '2026-12-20')!
+    expect(ahead.diffKg).toBeCloseTo(101.5 - 101.375)
+    expect(ahead.ahead).toBe(false)
+    expect(calcTargetGap(101, line, '2026-12-20')!.ahead).toBe(true)
+    expect(calcTargetGap(null, line, '2026-12-20')).toBeNull()
+  })
+
+  it('期間の切り替え：開始直後は開始日から、全期間は計画の終わりまで', () => {
+    expect(getChartRange('1m', '2026-11-10', plan)).toEqual({ from: '2026-11-08', to: '2026-12-07' })
+    expect(getChartRange('1m', '2027-03-01', plan)).toEqual({ from: '2027-01-31', to: '2027-03-01' })
+    expect(getChartRange('3m', '2027-03-01', plan).from).toBe('2026-12-02')
+    expect(getChartRange('all', '2027-03-01', plan)).toEqual({ from: '2026-11-08', to: '2027-10-31' })
+  })
+
+  it('7日平均の線は記録の無い7日間で途切れ、目標ラインは範囲の端で補間する', () => {
+    const logs = [
+      { measured_at: '2026-11-08', weight_kg: 104 },
+      { measured_at: '2026-11-09', weight_kg: 103.8 },
+      { measured_at: '2026-11-25', weight_kg: 102.6 },
+    ]
+    const data = buildWeightChartData(logs, plan, '1m', '2026-11-27')
+    expect(data.from).toBe('2026-11-08')
+    expect(data.days).toBe(30)
+    expect(data.dailyPoints).toHaveLength(3)
+    // 11/8〜11/15 が1本目（11/15 は 11/9 を含む）、11/25〜11/27 が2本目
+    expect(data.averageSegments).toHaveLength(2)
+    expect(data.averageSegments[0].at(-1)!.date).toBe('2026-11-15')
+    expect(data.averageSegments[1][0].date).toBe('2026-11-25')
+    expect(data.averageSegments[1].at(-1)!.date).toBe('2026-11-27') // 今日まで
+    expect(data.targetLine[0]).toEqual({ date: '2026-11-08', kg: 104 })
+    expect(data.targetLine.at(-1)!.kg).toBeCloseTo(getTargetWeightOn(buildTargetLine(plan), '2026-12-07'))
+    expect(data.gateMarkers).toEqual([])
+    expect(data.yMax).toBeGreaterThanOrEqual(104.5)
+  })
+
+  it('全期間はゲートの区切りを4つ持つ', () => {
+    const data = buildWeightChartData([], plan, 'all', '2026-11-10')
+    expect(data.gateMarkers.map((g) => g.gateIndex)).toEqual([1, 2, 3, 4])
+    expect(data.averageSegments).toEqual([])
+  })
+})
+
+describe('ゲート達成・3%・5%（11-5）', () => {
+  // 104kg：ゲート1 98.75kg、3% = 3.12kg（100.88kg）、5% = 5.2kg（98.8kg）
+  const plan = { start_weight_kg: 104, gates: calcGates(104, 15, 12).gates }
+  const avg = (avgKg: number, count = 7) => ({ avgKg, count, isReference: count < 3 })
+  const kinds = (ms: { kind: string }[]) => ms.map((m) => m.kind)
+
+  it('3%に達したら一言を出す', () => {
+    const ms = detectNewMilestones(plan, avg(100.8), new Set())
+    expect(kinds(ms)).toEqual(['loss3'])
+    expect(ms[0].message).toContain('血糖値')
+  })
+
+  it('ゲートの終わりの目標体重以下でゲート達成。5%も同時に', () => {
+    expect(kinds(detectNewMilestones(plan, avg(98.75), new Set(['loss3'])))).toEqual(['gate1', 'loss5'])
+  })
+
+  it('出したものは二度出さない', () => {
+    expect(detectNewMilestones(plan, avg(98), new Set(['gate1', 'loss3', 'loss5']))).toEqual([])
+  })
+
+  it('参考値（3件未満）のときは出さない', () => {
+    expect(detectNewMilestones(plan, avg(95, 2), new Set())).toEqual([])
+  })
+
+  it('まだ届いていなければ何も出さない', () => {
+    expect(detectNewMilestones(plan, avg(101), new Set())).toEqual([])
   })
 })

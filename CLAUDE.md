@@ -20,6 +20,10 @@
 - **チート**（`/wants`、コード上は want）：アイテム（`lib/cheatItems.ts`）を数量つきで組み合わせて登録。置き換え（コスト = 合計 − その食事の目安）か上乗せ（コスト = 合計）
 - **メシポゲージ**：月に1本。目標 = その月のチートのコスト合計、貯まったpt = 経過日数×150 ＋ 軽め×150 − がっつり×300 ＋ 運動pt。1pt = 1kcal
 - **運動**：任意のアドオン。時間か歩数で入力し、月のプールに加算
+- **体重**（`/weight`、ホームの「今朝の体重」）：1日1件・7日前まで。メインは7日平均（3件未満は参考値）
+- **月の割り直し**：2ヶ月目以降は、月初に前月の最後の7日間の平均からその月の1日の貯金を決めて `monthly_targets` に保存。画面は必ず `useMonthTargets`（`lib/monthTargets.ts`）から月の目標を取る
+- **進捗チャート**：7日平均の線・毎日の点・ゲートの目標ライン（SVG自作、`components/WeightChart.tsx`）
+- **ゲート達成・3%・5%**：7日平均で判定し、`goal_milestones` に保存して1回だけ出す
 
 
 
@@ -63,25 +67,30 @@ app/
 ├── page.tsx              # ホーム（目安・3択記録・メシポゲージ・＋運動・＋チート・日付切り替え）
 ├── setup/page.tsx        # 初回設定（目標とゲート）
 ├── wants/page.tsx        # チートの月登録
-├── weight/page.tsx       # 体重（v1のまま。フェーズ2で毎朝＋7日平均に作り直す）
+├── weight/page.tsx       # 体重（7日平均・進捗チャート・入力・記録の一覧）
 ├── settings/page.tsx     # 設定（目標設定への入口）
 ├── login/                # ログイン・パスワードリセット
 ├── plan/, plan/new/      # v1（週プラン・AIプラン生成）。触らない・拡張しない
 ├── settings/profile/     # v1のプロフィール設定。触らない
 └── api/
     ├── generate-plan/    # v1のAIプラン生成。v2では使わない
-    └── ai-check/         # 体重チェックイン相談（フェーズ3でv2向けに見直す）
+    └── ai-check/         # v1の体重チェックイン相談。今はどこからも呼ばない（フェーズ3でv2向けに見直す）
 components/
 ├── BottomNav.tsx         # 今日 / チート / 体重 / 設定
 ├── MealExamplesSheet.tsx
 ├── CheatItemPicker.tsx
-└── ExerciseSheet.tsx
+├── ExerciseSheet.tsx
+├── WeightEntryCard.tsx   # 体重の入力（ホーム・/weight 共通）
+├── WeightChart.tsx       # 進捗チャート（SVG）
+└── MilestoneCards.tsx
 lib/
 ├── calories.ts           # v2の計算はすべてここ（純粋関数）
 ├── calorieConstants.ts   # 数値の初期値はすべてここ
 ├── calories.test.ts
 ├── cheatItems.ts         # チートアイテム表
 ├── mealExamples.ts       # メニュー例の表
+├── monthTargets.ts       # 月の目標の入口（useMonthTargets）。monthly_targets の読み書き
+├── milestones.ts         # ゲート達成・3%・5%（useMilestones）。goal_milestones の読み書き
 └── supabase.ts
 types/index.ts
 docs/v2-spec.md           # 仕様書
@@ -108,7 +117,7 @@ migration_*.sql           # DB変更（Supabase SQL Editor で手動実行）
 - テーブルや列の変更は `migration_<内容>.sql` を新しく作る。`schema.sql` は直接変えない
 - 新しいテーブルには RLS（`auth.uid() = user_id`）と `authenticated` への grant を必ず付ける
 - 既存データを壊さない変更にする（列追加は null 可、制約の作り直しは既存値が通るか確認）
-- 主要テーブル（v2）：`user_profiles`、`goal_plans`（有効は1人1行）、`monthly_wants`、`meal_logs`、`exercise_logs`、`custom_cheat_items`
+- 主要テーブル（v2）：`user_profiles`、`goal_plans`（有効は1人1行）、`monthly_wants`、`meal_logs`、`exercise_logs`、`custom_cheat_items`、`weight_logs`（1人1日1件）、`monthly_targets`（goal_plan・月ごとに1行）、`goal_milestones`
 - v1のテーブル（`week_plans`、`plan_blocks`、`weekly_intentions` など）はv2では使わない
 
 

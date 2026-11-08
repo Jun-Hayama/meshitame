@@ -11,8 +11,8 @@ import {
   type GoalPlanRow,
   type MonthlyWantRow,
 } from '@/types'
+import { useMonthTargets } from '@/lib/monthTargets'
 import {
-  calcCurrentMonthTargets,
   calcMealSlotTargets,
   formatDateJST,
   getMonthlyWantRowCost,
@@ -84,13 +84,11 @@ export default function WantsPage() {
     [rows]
   )
 
-  // 表示している月の朝昼夜の目安（置き換えのコストに使う）
+  // 表示している月の朝昼夜の目安（置き換えのコストに使う）。ホームと同じ月の目標（11-3）
+  const { targets: monthTargets } = useMonthTargets(goal, year, month)
   const slotTargets = useMemo(
-    () =>
-      goal
-        ? calcMealSlotTargets(calcCurrentMonthTargets(goal, new Date(`${prefix}-15T12:00:00+09:00`)).dailyIntakeKcal)
-        : [],
-    [goal, prefix]
+    () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
+    [monthTargets]
   )
   const costOf = (w: MonthlyWantRow) => getMonthlyWantRowCost(w, slotTargets)
 

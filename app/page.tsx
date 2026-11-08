@@ -13,15 +13,16 @@ import {
   type MealLogRow,
   type MealSlot,
   type MonthlyWantRow,
+  type WeightLog,
 } from '@/types'
 import {
+  calcExtendedPeriodMonths,
   calcMealSlotTargets,
-  calcCurrentMonthTargets,
+  calcWeightAverage,
   calcMeshipoGauge,
   calcMonthEarnedPt,
   expandCheatsForMonth,
   addDaysToDateStr,
-  dateStrToJSTDate,
   formatDateJST,
   formatMonthDayWeekday,
   getDaysInMonth,
@@ -29,10 +30,14 @@ import {
   getReplacedMealKeys,
   sumMonthCheatCosts,
 } from '@/lib/calories'
-import { MEAL_RECORD_DELTA } from '@/lib/calorieConstants'
+import { MEAL_RECORD_DELTA, WEIGHT_AVG_DAYS } from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
 import { CheatItemPicker } from '@/components/CheatItemPicker'
 import { ExerciseSheet } from '@/components/ExerciseSheet'
+import { WeightEntryCard } from '@/components/WeightEntryCard'
+import { dismissCappedNotice, useMonthTargets } from '@/lib/monthTargets'
+import { useMilestones } from '@/lib/milestones'
+import { MilestoneCards } from '@/components/MilestoneCards'
 
 const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'morning', label: '朝' },
@@ -55,6 +60,7 @@ export default function Home() {
   const [userId, setUserId] = useState<string | null>(null)
   const [mealLogs, setMealLogs] = useState<MealLogRow[]>([])
   const [exerciseLogs, setExerciseLogs] = useState<ExerciseLogRow[]>([])
+  const [weightLogs, setWeightLogs] = useState<WeightLog[]>([])
   const [showCheatPicker, setShowCheatPicker] = useState(false)
   const [showExercise, setShowExercise] = useState(false)
   const [exampleSlot, setExampleSlot] = useState<MealSlot | null>(null)
@@ -68,6 +74,9 @@ export default function Home() {
   const recordRange = getRecordableDateRange(today)
   // 記録の読み込み範囲：月初と7日前の早い方〜今日（前月の日を表示しても記録が見えるように）
   const loadFrom = recordRange.min < monthStart ? recordRange.min : monthStart
+  // 体重は、表示できる一番前の日の7日平均まで出せるように読む
+  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS - 1))
+  const weightLoadFrom = weightFrom < loadFrom ? weightFrom : loadFrom
 
   // 表示中の日（7日前〜今日）。記録はこの日付で保存する
   const [viewDate, setViewDate] = useState(today)
@@ -90,6 +99,7 @@ export default function Home() {
       { data: wantData, error: wantErr },
       { data: mealData, error: mealErr },
       { data: exerciseData, error: exerciseErr },
+      { data: weightData, error: weightErr },
     ] = await Promise.all([
       supabase.from('goal_plans').select('*').eq('user_id', userId).eq('is_active', true).maybeSingle(),
       supabase.from('monthly_wants').select('*').eq('user_id', userId).eq('is_active', true),
@@ -105,6 +115,12 @@ export default function Home() {
         .eq('user_id', userId)
         .gte('log_date', loadFrom)
         .lte('log_date', today),
+      supabase
+        .from('weight_logs')
+        .select('*')
+        .eq('user_id', userId)
+        .gte('measured_at', weightLoadFrom)
+        .lte('measured_at', today),
     ])
 
     const missing = (e: { message: string; code?: string } | null) =>
@@ -113,6 +129,7 @@ export default function Home() {
     if (wantErr && !missing(wantErr)) setError(wantErr.message)
     if (mealErr && !missing(mealErr)) setError(mealErr.message)
     if (exerciseErr && !missing(exerciseErr)) setError(exerciseErr.message)
+    if (weightErr) setError(weightErr.message)
 
     if (missing(wantErr) || missing(mealErr)) {
       setError('DBの migration_v2_monthly_wants.sql を Supabase で実行してください')
@@ -124,13 +141,15 @@ export default function Home() {
     setWants((wantData as MonthlyWantRow[]) || [])
     setMealLogs((mealData as MealLogRow[]) || [])
     setExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
+    setWeightLogs((weightData as WeightLog[]) || [])
     setLoading(false)
   }
 
-  // 今月の目安（メシポゲージのコスト計算用）
-  const monthTargets = useMemo(
-    () => (goal ? calcCurrentMonthTargets(goal, new Date()) : null),
-    [goal]
+  // 今月の目安（メシポゲージのコスト計算用）。月初に決めて保存した値（11-3）
+  const { targets: monthTargets, error: targetsError, setTargets: setMonthTargets } = useMonthTargets(
+    goal,
+    year,
+    month
   )
   const slotTargets = useMemo(
     () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
@@ -138,9 +157,10 @@ export default function Home() {
   )
 
   // 表示中の日の月の目安（前月の日を表示しているときは前月の値）
-  const viewTargets = useMemo(
-    () => (goal ? calcCurrentMonthTargets(goal, dateStrToJSTDate(viewDate)) : null),
-    [goal, viewDate]
+  const { targets: viewTargets } = useMonthTargets(
+    goal,
+    Number(viewDate.slice(0, 4)),
+    Number(viewDate.slice(5, 7))
   )
   const viewSlotTargets = useMemo(
     () => (viewTargets ? calcMealSlotTargets(viewTargets.dailyIntakeKcal) : []),
@@ -161,6 +181,10 @@ export default function Home() {
     daysInMonth: getDaysInMonth(year, month),
   })
   const viewLogs = mealLogs.filter((l) => l.log_date === viewDate)
+  const viewWeight = weightLogs.find((w) => w.measured_at === viewDate) ?? null
+  const viewAverage = calcWeightAverage(weightLogs, viewDate)
+  const todayAverage = calcWeightAverage(weightLogs, today)
+  const { milestones, dismiss: dismissMilestone } = useMilestones(goal, todayAverage)
 
   const nextWant = useMemo(() => {
     const upcoming = wants
@@ -211,7 +235,7 @@ export default function Home() {
     )
   }
 
-  if (loading) {
+  if (loading || (goal && !monthTargets && !targetsError)) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-stone-950">
         <div className="text-amber-400 text-lg">読み込み中...</div>
@@ -298,6 +322,85 @@ export default function Home() {
         )}
 
         {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
+        {targetsError && <p className="text-rose-400 text-sm mb-4">{targetsError}</p>}
+
+        {/* ゲート達成・3%・5%（11-5） */}
+        {milestones.length > 0 && (
+          <div className="mb-6">
+            <MilestoneCards milestones={milestones} onDismiss={dismissMilestone} />
+          </div>
+        )}
+
+        {/* 月の割り直し（11-3）：今月の目標の案内 */}
+        {monthTargets?.ahead && (
+          <div className="bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-3 mb-6">
+            <p className="text-amber-400 text-sm font-medium">ペースより先に進んでいます</p>
+            <p className="text-stone-400 text-xs mt-1">今月は貯金0kcal/日（維持）でゲート{monthTargets.gateIndex}の目標ペースです</p>
+          </div>
+        )}
+        {monthTargets?.dailySaving.capped && !monthTargets.cappedDismissed && (() => {
+          const avgKg = todayAverage.avgKg ?? monthTargets.startAvgKg
+          const extended =
+            avgKg === null ? null : calcExtendedPeriodMonths(avgKg, goal.target_weight_kg, monthTargets.dailySaving.capKcal)
+          return (
+            <div className="bg-stone-900 rounded-2xl px-4 py-3 mb-6">
+              <p className="text-stone-200 text-sm">
+                このままだとゲート{monthTargets.gateIndex}に約{monthTargets.shortfallKg.toFixed(1)}kg届かないペースです
+              </p>
+              <p className="text-stone-500 text-xs mt-1">
+                1日の貯金は上限の{monthTargets.dailySaving.capKcal}kcalにしています。どうするか選べます
+              </p>
+              <div className="flex gap-2 mt-3">
+                {extended !== null && avgKg !== null && (
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/setup?period=${extended}&weight=${avgKg.toFixed(1)}`)}
+                    className="flex-1 bg-amber-400 text-stone-950 font-bold text-xs py-2 rounded-xl"
+                  >
+                    期間を{extended}ヶ月に延ばす
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      setMonthTargets(await dismissCappedNotice(goal, year, month))
+                    } catch (e) {
+                      setError((e as Error).message)
+                    }
+                  }}
+                  className="flex-1 bg-stone-800 text-stone-300 text-xs py-2 rounded-xl"
+                >
+                  そのまま続ける
+                </button>
+              </div>
+              <p className="text-stone-600 text-[11px] mt-2">そのまま続けても、来月の割り直しでまた調整されます</p>
+            </div>
+          )
+        })()}
+
+        {/* 今朝の体重（11-1） */}
+        {userId && (
+          <section className="mb-6">
+            <WeightEntryCard
+              key={viewDate}
+              userId={userId}
+              date={viewDate}
+              today={today}
+              log={viewWeight}
+              compact
+              onSaved={(row) =>
+                setWeightLogs((prev) => [...prev.filter((w) => w.measured_at !== row.measured_at), row])
+              }
+            />
+            {viewAverage.avgKg !== null && (
+              <button type="button" onClick={() => router.push('/weight')} className="text-stone-500 text-xs mt-1.5 px-1">
+                7日平均 <span className="text-stone-300">{viewAverage.avgKg.toFixed(1)}kg</span>
+                {viewAverage.isReference && '（参考値）'}
+              </button>
+            )}
+          </section>
+        )}
 
         {/* 今日の目安 */}
         <section className="mb-8">

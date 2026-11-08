@@ -20,6 +20,18 @@ import {
   ExerciseType,
   MonthCheatEntry,
   MeshipoGauge,
+  WeightLog,
+  WeightAverage,
+  WeekOverWeek,
+  MonthTargets,
+  MonthTargetBasis,
+  MonthlyTargetRow,
+  ChartPeriod,
+  TargetLinePoint,
+  WeightChartData,
+  WeightChartPoint,
+  Milestone,
+  MilestoneKind,
 } from '@/types'
 import {
   KCAL_PER_KG,
@@ -38,6 +50,13 @@ import {
   EXERCISE_PT_PER_MIN,
   PT_PER_1000_STEPS,
   RECORD_PAST_DAYS,
+  WEIGHT_INPUT_MIN_KG,
+  WEIGHT_INPUT_MAX_KG,
+  WEIGHT_AVG_DAYS,
+  WEIGHT_AVG_MIN_COUNT,
+  CHART_PERIOD_DAYS,
+  CHART_Y_PADDING_KG,
+  HEALTH_MILESTONES,
 } from '@/lib/calorieConstants'
 import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import { MEAL_EXAMPLES, MEAL_EXAMPLE_RANGE, MEAL_EXAMPLES_MAX, type MealExample } from '@/lib/mealExamples'
@@ -294,13 +313,27 @@ export function estimateMonthsToTarget(targetLossKg: number, dailySavingKcal: nu
 // 今月の1日の貯金・目安（日付は日本時間で数える）
 // 開始月を1ヶ月目として暦の月で数え、該当ゲートの目標 ÷ 3 を月の目標kgにする
 // 開始前の日付は1ヶ月目として扱う。期間を過ぎたら finished: true で、貯金0（TDEEで維持）を返す
+// 画面は割り直しを含む useMonthTargets（lib/monthTargets.ts）を使う。これは計画どおりの値
 export function calcCurrentMonthTargets(
   plan: Pick<GoalPlanRow, 'start_date' | 'period_months' | 'gates' | 'tdee' | 'bmr'>,
   date: Date
 ): CurrentMonthTargets {
-  const [startYear, startMonth] = plan.start_date.split('-').map(Number)
   const [year, month] = formatDateJST(date).split('-').map(Number)
-  const monthNumber = Math.max(1, (year - startYear) * 12 + (month - startMonth) + 1)
+  return calcPlanMonthTargets(plan, year, month)
+}
+
+// 開始月を1とした何ヶ月目か（開始前は1）
+export function getMonthNumber(plan: Pick<GoalPlanRow, 'start_date'>, year: number, month: number): number {
+  const [startYear, startMonth] = plan.start_date.split('-').map(Number)
+  return Math.max(1, (year - startYear) * 12 + (month - startMonth) + 1)
+}
+
+export function calcPlanMonthTargets(
+  plan: Pick<GoalPlanRow, 'start_date' | 'period_months' | 'gates' | 'tdee' | 'bmr'>,
+  year: number,
+  month: number
+): CurrentMonthTargets {
+  const monthNumber = getMonthNumber(plan, year, month)
   const finished = monthNumber > plan.period_months
 
   const gate = finished ? null : plan.gates[Math.ceil(monthNumber / GATE_MONTHS) - 1]
@@ -317,6 +350,170 @@ export function calcCurrentMonthTargets(
     dailySaving,
     dailyIntakeKcal: calcDailyIntakeTarget(plan.tdee, dailySaving.savingKcal, plan.bmr),
   }
+}
+
+// --- 11-3. 月の割り直し ---
+// 月初に1回だけ決めて monthly_targets に保存する。月の途中では変えない
+
+type PlanForTargets = Pick<GoalPlanRow, 'start_date' | 'period_months' | 'gates' | 'tdee' | 'bmr'>
+
+// 月初の7日平均を取る日 = 前月の最後の日（その日を含む7日間 = 1日の7日前〜前日）
+export function getMonthStartAverageDate(year: number, month: number): string {
+  return addDaysToDateStr(`${year}-${String(month).padStart(2, '0')}-01`, -1)
+}
+
+// その月の目標をどう決めるか
+// start / finished：計画どおりで保存しない。provisional：まだ来ていない月なので仮に計画どおり
+// decide：保存済みの行を使う。なければ月初の7日平均で決めて保存する
+export function getMonthTargetMode(
+  plan: Pick<GoalPlanRow, 'start_date' | 'period_months'>,
+  year: number,
+  month: number,
+  today: string
+): 'start' | 'finished' | 'provisional' | 'decide' {
+  const monthNumber = getMonthNumber(plan, year, month)
+  if (monthNumber === 1) return 'start'
+  if (monthNumber > plan.period_months) return 'finished'
+  const [ty, tm] = today.split('-').map(Number)
+  if (year * 12 + month > ty * 12 + tm) return 'provisional'
+  return 'decide'
+}
+
+function withPlanBasis(base: CurrentMonthTargets, basis: MonthTargetBasis): MonthTargets {
+  return {
+    ...base,
+    basis,
+    startAvgKg: null,
+    startAvgCount: 0,
+    gateEndTargetKg: null,
+    remainingMonths: null,
+    ahead: false,
+    shortfallKg: 0,
+    cappedDismissed: false,
+  }
+}
+
+// 割り直し（純粋関数）
+// ゲートの終わりの目標体重 = 開始体重 − そのゲートまでのゲート目標の合計（= gates[i].targetWeightKg）
+// 月の目標kg = （月初の7日平均 − ゲートの終わりの目標体重）÷ ゲートの残り月数（その月を含む）
+// 月初の7日平均が参考値（3件未満）なら計画どおり。目標kgが0以下なら1日の貯金0（先行）
+export function decideMonthTargets(
+  plan: PlanForTargets,
+  year: number,
+  month: number,
+  startAvg: WeightAverage
+): MonthTargets {
+  const base = calcPlanMonthTargets(plan, year, month)
+  if (base.monthNumber === 1) return withPlanBasis(base, 'start')
+  if (base.finished || base.gateIndex === null) return withPlanBasis(base, 'finished')
+
+  const gate = plan.gates[base.gateIndex - 1]
+  const remainingMonths = gate.endMonth - base.monthNumber + 1
+  const startInfo = {
+    startAvgKg: startAvg.avgKg,
+    startAvgCount: startAvg.count,
+    gateEndTargetKg: gate.targetWeightKg,
+    remainingMonths,
+  }
+  if (startAvg.avgKg === null || startAvg.isReference) {
+    return { ...withPlanBasis(base, 'plan'), ...startInfo }
+  }
+
+  const monthlyTargetKg = (startAvg.avgKg - gate.targetWeightKg) / remainingMonths
+  const ahead = monthlyTargetKg <= 0
+  const dailySaving = calcDailySaving(Math.max(0, monthlyTargetKg), year, month, plan.tdee, plan.bmr)
+  // このままだと届かない見込み = 上限で削れなかった分 × 日数 ÷ 7200 × 残り月数
+  const shortfallKg = dailySaving.capped
+    ? ((dailySaving.uncappedKcal - dailySaving.capKcal) * getDaysInMonth(year, month) * remainingMonths) / KCAL_PER_KG
+    : 0
+
+  return {
+    ...base,
+    ...startInfo,
+    basis: 'rebalanced',
+    monthlyTargetKg,
+    dailySaving,
+    dailyIntakeKcal: calcDailyIntakeTarget(plan.tdee, dailySaving.savingKcal, plan.bmr),
+    ahead,
+    shortfallKg,
+    cappedDismissed: false,
+  }
+}
+
+// 保存する行（decideMonthTargets の basis が plan / rebalanced のときだけ）
+export function monthTargetsToRow(
+  t: MonthTargets,
+  userId: string,
+  goalPlanId: string
+): Omit<MonthlyTargetRow, 'id' | 'created_at'> {
+  if ((t.basis !== 'plan' && t.basis !== 'rebalanced') || t.gateIndex === null) {
+    throw new Error(`保存しない月です: ${t.basis}`)
+  }
+  return {
+    user_id: userId,
+    goal_plan_id: goalPlanId,
+    year: t.year,
+    month: t.month,
+    month_number: t.monthNumber,
+    gate_index: t.gateIndex,
+    basis: t.basis,
+    start_avg_kg: t.startAvgKg === null ? null : Math.round(t.startAvgKg * 100) / 100,
+    start_avg_count: t.startAvgCount,
+    gate_end_target_kg: Math.round((t.gateEndTargetKg ?? 0) * 100) / 100,
+    remaining_months: t.remainingMonths ?? 0,
+    monthly_target_kg: Math.round(t.monthlyTargetKg * 1000) / 1000,
+    daily_saving_kcal: t.dailySaving.savingKcal,
+    uncapped_kcal: t.dailySaving.uncappedKcal,
+    cap_kcal: t.dailySaving.capKcal,
+    capped: t.dailySaving.capped,
+    shortfall_kg: Math.round(t.shortfallKg * 100) / 100,
+    capped_dismissed: false,
+  }
+}
+
+// 保存済みの行 → 画面が使う形（目安カロリーは保存した1日の貯金から出す）
+export function monthTargetsFromRow(plan: PlanForTargets, row: MonthlyTargetRow): MonthTargets {
+  const savingKcal = Number(row.daily_saving_kcal)
+  const monthlyTargetKg = Number(row.monthly_target_kg)
+  return {
+    year: row.year,
+    month: row.month,
+    monthNumber: row.month_number,
+    gateIndex: row.gate_index,
+    finished: false,
+    monthlyTargetKg,
+    dailySaving: {
+      savingKcal,
+      uncappedKcal: Number(row.uncapped_kcal),
+      capKcal: Number(row.cap_kcal),
+      capped: row.capped,
+    },
+    dailyIntakeKcal: calcDailyIntakeTarget(plan.tdee, savingKcal, plan.bmr),
+    basis: row.basis,
+    startAvgKg: row.start_avg_kg === null ? null : Number(row.start_avg_kg),
+    startAvgCount: row.start_avg_count,
+    gateEndTargetKg: Number(row.gate_end_target_kg),
+    remainingMonths: row.remaining_months,
+    ahead: row.basis === 'rebalanced' && monthlyTargetKg <= 0,
+    shortfallKg: Number(row.shortfall_kg),
+    cappedDismissed: row.capped_dismissed,
+  }
+}
+
+// 保存しない月（開始月・期間後・まだ来ていない月）の値
+export function planMonthTargets(
+  plan: PlanForTargets,
+  year: number,
+  month: number,
+  basis: 'start' | 'finished' | 'provisional'
+): MonthTargets {
+  return withPlanBasis(calcPlanMonthTargets(plan, year, month), basis)
+}
+
+// capped のとき「期間を延ばす」で /setup に入れる期間
+// 今の7日平均から最終の目標体重まで、上限のペースで何ヶ月かかるか（3ヶ月単位）
+export function calcExtendedPeriodMonths(currentAvgKg: number, targetWeightKg: number, capKcal: number): number | null {
+  return estimateMonthsToTarget(currentAvgKg - targetWeightKg, capKcal)
 }
 
 // --- 6-4. マイナス時 ---
@@ -652,4 +849,192 @@ export function formatMonthDayWeekday(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number)
   const weekday = WEEKDAY_LABELS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]
   return `${m}/${d}（${weekday}）`
+}
+
+// --- 11-1. 毎朝の体重 ---
+
+// 入力欄の文字列 → 0.1kg単位の体重。範囲外・数字でないときは null
+export function parseWeightInput(input: string): number | null {
+  const value = Number(input.trim().replace(',', '.'))
+  if (input.trim() === '' || !Number.isFinite(value)) return null
+  if (value < WEIGHT_INPUT_MIN_KG || value > WEIGHT_INPUT_MAX_KG) return null
+  return Math.round(value * 10) / 10
+}
+
+// --- 11-2. 7日間の平均 ---
+
+type WeightPoint = Pick<WeightLog, 'measured_at' | 'weight_kg'>
+
+// その日を含む直近7日間にある記録の平均（記録がない日は飛ばす。補完しない）
+export function calcWeightAverage(logs: WeightPoint[], date: string): WeightAverage {
+  const from = addDaysToDateStr(date, -(WEIGHT_AVG_DAYS - 1))
+  const inRange = logs.filter((l) => l.measured_at >= from && l.measured_at <= date)
+  const count = inRange.length
+  const avgKg = count === 0 ? null : inRange.reduce((sum, l) => sum + Number(l.weight_kg), 0) / count
+  return { avgKg, count, isReference: count < WEIGHT_AVG_MIN_COUNT }
+}
+
+// 前週比 = その日の7日平均 − 7日前の7日平均
+export function calcWeekOverWeek(logs: WeightPoint[], date: string): WeekOverWeek {
+  const now = calcWeightAverage(logs, date)
+  const before = calcWeightAverage(logs, addDaysToDateStr(date, -WEIGHT_AVG_DAYS))
+  if (now.avgKg === null || before.avgKg === null) return { diffKg: null, isReference: true }
+  return { diffKg: now.avgKg - before.avgKg, isReference: now.isReference || before.isReference }
+}
+
+// 「−0.4kg」「+0.3kg」「±0.0kg」（0.1kg単位）
+export function formatSignedKg(diffKg: number): string {
+  const tenths = Math.round(diffKg * 10)
+  if (tenths === 0) return '±0.0kg'
+  return `${tenths > 0 ? '+' : '−'}${(Math.abs(tenths) / 10).toFixed(1)}kg`
+}
+
+// --- 11-4. 進捗チャート ---
+
+// a から b まで何日か（b − a）
+export function daysBetween(a: string, b: string): number {
+  const toUTC = (d: string) => {
+    const [y, m, day] = d.split('-').map(Number)
+    return Date.UTC(y, m - 1, day)
+  }
+  return Math.round((toUTC(b) - toUTC(a)) / MS_PER_DAY)
+}
+
+// 開始月から数えて monthNumber ヶ月目の月末（例：11/8開始の3ヶ月目 → 1/31）
+export function getPlanMonthEndDate(startDate: string, monthNumber: number): string {
+  const [y, m] = startDate.split('-').map(Number)
+  const index = y * 12 + (m - 1) + (monthNumber - 1)
+  const year = Math.floor(index / 12)
+  const month = (index % 12) + 1
+  return `${year}-${String(month).padStart(2, '0')}-${String(getDaysInMonth(year, month)).padStart(2, '0')}`
+}
+
+// 目標ライン：開始日の開始体重 → 各ゲートの終わりの目標体重
+export function buildTargetLine(
+  plan: Pick<GoalPlanRow, 'start_date' | 'start_weight_kg' | 'gates'>
+): TargetLinePoint[] {
+  return [
+    { date: plan.start_date, kg: Number(plan.start_weight_kg), gateIndex: null },
+    ...plan.gates.map((g) => ({
+      date: getPlanMonthEndDate(plan.start_date, g.endMonth),
+      kg: g.targetWeightKg,
+      gateIndex: g.index,
+    })),
+  ]
+}
+
+// その日の目標ライン上の体重（区切りと区切りの間は日数で直線に結ぶ。開始前・終了後は端の値）
+export function getTargetWeightOn(line: WeightChartPoint[], date: string): number {
+  if (date <= line[0].date) return line[0].kg
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1]
+    const b = line[i]
+    if (date <= b.date) {
+      const span = daysBetween(a.date, b.date)
+      return span === 0 ? b.kg : a.kg + ((b.kg - a.kg) * daysBetween(a.date, date)) / span
+    }
+  }
+  return line[line.length - 1].kg
+}
+
+// 今日の7日平均と目標ラインの差。マイナスなら先行
+export function calcTargetGap(
+  avgKg: number | null,
+  line: WeightChartPoint[],
+  date: string
+): { targetKg: number; diffKg: number; ahead: boolean } | null {
+  if (avgKg === null || line.length === 0) return null
+  const targetKg = getTargetWeightOn(line, date)
+  const diffKg = avgKg - targetKg
+  return { targetKg, diffKg, ahead: diffKg <= 0 }
+}
+
+// 表示する範囲。1ヶ月・3ヶ月は今日までの直近（開始直後は開始日から）。全期間は開始日〜計画の終わり
+export function getChartRange(
+  period: ChartPeriod,
+  today: string,
+  plan: Pick<GoalPlanRow, 'start_date' | 'period_months'>
+): { from: string; to: string } {
+  if (period === 'all') {
+    const end = getPlanMonthEndDate(plan.start_date, plan.period_months)
+    return { from: plan.start_date, to: today > end ? today : end }
+  }
+  const days = CHART_PERIOD_DAYS[period]
+  const recent = addDaysToDateStr(today, -(days - 1))
+  const from = recent > plan.start_date ? recent : plan.start_date
+  return { from, to: addDaysToDateStr(from, days - 1) > today ? addDaysToDateStr(from, days - 1) : today }
+}
+
+export function buildWeightChartData(
+  logs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[],
+  plan: Pick<GoalPlanRow, 'start_date' | 'start_weight_kg' | 'gates' | 'period_months'>,
+  period: ChartPeriod,
+  today: string
+): WeightChartData {
+  const { from, to } = getChartRange(period, today, plan)
+  const days = daysBetween(from, to) + 1
+
+  const dailyPoints = logs
+    .filter((l) => l.measured_at >= from && l.measured_at <= to)
+    .map((l) => ({ date: l.measured_at, kg: Number(l.weight_kg) }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+
+  // 7日平均は今日まで。7日間に記録が無い日で線を切る
+  const averageSegments: WeightChartPoint[][] = []
+  let segment: WeightChartPoint[] = []
+  const avgTo = to < today ? to : today
+  for (let d = from; d <= avgTo; d = addDaysToDateStr(d, 1)) {
+    const { avgKg } = calcWeightAverage(logs, d)
+    if (avgKg === null) {
+      if (segment.length) averageSegments.push(segment)
+      segment = []
+    } else {
+      segment.push({ date: d, kg: avgKg })
+    }
+  }
+  if (segment.length) averageSegments.push(segment)
+
+  const fullLine = buildTargetLine(plan)
+  const targetLine: WeightChartPoint[] = [
+    { date: from, kg: getTargetWeightOn(fullLine, from) },
+    ...fullLine.filter((p) => p.date > from && p.date < to).map(({ date, kg }) => ({ date, kg })),
+    { date: to, kg: getTargetWeightOn(fullLine, to) },
+  ]
+  const gateMarkers = fullLine
+    .filter((p): p is TargetLinePoint & { gateIndex: number } => p.gateIndex !== null && p.date >= from && p.date <= to)
+    .map((p) => ({ date: p.date, gateIndex: p.gateIndex }))
+
+  const values = [...dailyPoints, ...averageSegments.flat(), ...targetLine].map((p) => p.kg)
+  const yMin = Math.floor((Math.min(...values) - CHART_Y_PADDING_KG) * 2) / 2
+  const yMax = Math.ceil((Math.max(...values) + CHART_Y_PADDING_KG) * 2) / 2
+
+  return { from, to, days, dailyPoints, averageSegments, targetLine, gateMarkers, yMin, yMax }
+}
+
+// --- 11-5. ゲート達成・3%・5% ---
+
+// 7日平均で、まだ出していない達成を返す（参考値＝記録3件未満のときは出さない）
+export function detectNewMilestones(
+  plan: Pick<GoalPlanRow, 'start_weight_kg' | 'gates'>,
+  avg: WeightAverage,
+  achieved: ReadonlySet<string>
+): Milestone[] {
+  if (avg.avgKg === null || avg.isReference) return []
+  const avgKg = avg.avgKg
+  const startKg = Number(plan.start_weight_kg)
+  const lossKg = startKg - avgKg
+  const found: Milestone[] = []
+
+  for (const g of plan.gates) {
+    const kind: MilestoneKind = `gate${g.index}`
+    if (!achieved.has(kind) && avgKg <= g.targetWeightKg + EPSILON) {
+      found.push({ kind, title: `ゲート${g.index}達成！`, message: `開始から −${lossKg.toFixed(1)}kg。この調子でいこう` })
+    }
+  }
+  for (const h of HEALTH_MILESTONES) {
+    if (!achieved.has(h.kind) && lossKg >= startKg * h.ratio - EPSILON) {
+      found.push({ kind: h.kind, title: `開始から${Math.round(h.ratio * 100)}%減`, message: h.message })
+    }
+  }
+  return found
 }

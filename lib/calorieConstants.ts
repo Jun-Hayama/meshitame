@@ -68,3 +68,22 @@ export const PT_PER_1000_STEPS = 35
 
 // 過去の日の記録（10-7）：さかのぼれる日数（今日を含めて8日分）
 export const RECORD_PAST_DAYS = 7
+
+// 体重の記録（11-1）：入力できる範囲（kg）
+export const WEIGHT_INPUT_MIN_KG = 30
+export const WEIGHT_INPUT_MAX_KG = 300
+
+// 7日間の平均（11-2）：その日を含む直近7日間。記録が3件未満なら参考値
+export const WEIGHT_AVG_DAYS = 7
+export const WEIGHT_AVG_MIN_COUNT = 3
+
+// 進捗チャート（11-4）：期間の切り替え（日数）。全期間は開始日〜計画の終わり
+export const CHART_PERIOD_DAYS = { '1m': 30, '3m': 90 } as const
+// 縦軸の上下の余白（kg）
+export const CHART_Y_PADDING_KG = 0.5
+
+// ゲート達成と健康メリットの一言（11-5）。開始体重からの減量率で判定する（7日平均・参考値でないとき）
+export const HEALTH_MILESTONES = [
+  { kind: 'loss3', ratio: 0.03, message: '血糖値や中性脂肪の改善が期待できるライン' },
+  { kind: 'loss5', ratio: 0.05, message: '血圧の改善も期待できるライン' },
+] as const

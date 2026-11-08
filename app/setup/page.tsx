@@ -11,8 +11,10 @@ import {
   calcCurrentMonthTargets,
   estimateMonthsToTarget,
   formatDateJST,
+  parseWeightInput,
 } from '@/lib/calories'
 import type { GoalPlanRow } from '@/types'
+import { GATE_MONTHS } from '@/lib/calorieConstants'
 
 type Sex = 'male' | 'female' | 'other'
 type ActivityLevel = 'low' | 'moderate' | 'high'
@@ -114,6 +116,13 @@ export default function SetupPage() {
           setActivityLevel(profile.activity_level ?? 'moderate')
         }
       }
+
+      // ホームの「期間を延ばす」から来たとき（11-3）：今の7日平均と延ばした期間を入れた状態で開く
+      const params = new URLSearchParams(window.location.search)
+      const periodParam = Number(params.get('period'))
+      const weightParam = parseWeightInput(params.get('weight') ?? '')
+      if (Number.isInteger(periodParam) && periodParam > 0 && periodParam % GATE_MONTHS === 0) setPeriodMonths(periodParam)
+      if (weightParam !== null) setWeight(String(weightParam))
       setLoading(false)
     })
   }, [router])

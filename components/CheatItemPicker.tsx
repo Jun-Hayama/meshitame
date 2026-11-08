@@ -12,15 +12,16 @@ import type {
 } from '@/types'
 import {
   buildCheatLabel,
-  calcCurrentMonthTargets,
   calcMealSlotTargets,
   convertCheatCost,
+  formatDateJST,
   getCheatKind,
   getDefaultCheatType,
   getMonthlyWantRowCost,
   sortCheatItemsByUsage,
   sumCheatItemsKcal,
 } from '@/lib/calories'
+import { useMonthTargets } from '@/lib/monthTargets'
 import { CHEAT_GENRES, CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 
 type AddMode = 'date' | 'frequency'
@@ -97,12 +98,13 @@ export function CheatItemPicker({
     return sortCheatItemsByUsage(filtered, history)
   }, [allItems, search, genre, history])
 
-  // コストは日付の月の目安で計算する（頻度ベースは今日の月）
-  const slotTargets = useMemo(() => {
-    if (!goal) return []
-    const when = mode === 'date' && date ? new Date(`${date}T12:00:00+09:00`) : new Date()
-    return calcMealSlotTargets(calcCurrentMonthTargets(goal, when).dailyIntakeKcal)
-  }, [goal, mode, date])
+  // コストは日付の月の目安で計算する（頻度ベースは今日の月）。ホームと同じ月の目標（11-3）
+  const costMonth = mode === 'date' && date ? date : formatDateJST(new Date())
+  const { targets: monthTargets } = useMonthTargets(goal, Number(costMonth.slice(0, 4)), Number(costMonth.slice(5, 7)))
+  const slotTargets = useMemo(
+    () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
+    [monthTargets]
+  )
 
   const totalKcal = sumCheatItemsKcal(selections)
   const kind = getCheatKind(selections)
