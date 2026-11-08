@@ -202,25 +202,20 @@ export interface DailySavingResult {
   capped: boolean
 }
 
-export interface WeeklyBudget {
-  budgetKcal: number
-  daysInMonthThisWeek: number // この週のうち対象月に含まれる日数
-  remainingDays: number // 対象月の残り日数（この週の初日から月末まで）
-  remainingWeeks: number // remainingDays ÷ 7
-}
-
-export type WantKind = 'ramen' | 'drinking_party' | 'evening_drink'
+export type WantKind = 'ramen' | 'drinking_party' | 'evening_drink' | 'other'
 
 export const WANT_KIND_LABELS: Record<WantKind, string> = {
   ramen: 'ラーメン',
   drinking_party: '飲み会',
   evening_drink: '晩酌',
+  other: 'チート',
 }
 
 export const WANT_KIND_EMOJI: Record<WantKind, string> = {
   ramen: '🍜',
   drinking_party: '🍻',
   evening_drink: '🍺',
+  other: '★',
 }
 
 // monthly_wants テーブルの1行
@@ -232,6 +227,32 @@ export interface MonthlyWantRow {
   times_per_week: number | null // 頻度ベース
   label: string | null
   is_active: boolean
+  created_at: string
+  // v2.1：中身を選んだチート（null は中身なし → WANT_COSTS をデフォルトに使う）
+  cheat_type: CheatType | null
+  replace_slot: MealSlot | null // 置き換えのとき、どの食事の代わりか
+  items: CheatItemSelection[] | null
+  total_kcal: number | null
+}
+
+// 置き換え（食事の代わり）/ 上乗せ（食事に追加）
+export type CheatType = 'replace' | 'addon'
+
+// チート1回分の中身（登録時の kcal をそのまま保存する）
+export interface CheatItemSelection {
+  genre: string // lib/cheatItems.ts の CheatGenre
+  name: string
+  kcal: number
+  qty: number
+}
+
+// custom_cheat_items テーブルの1行（自由入力したアイテム）
+export interface CustomCheatItemRow {
+  id: string
+  user_id: string
+  genre: string
+  name: string
+  kcal: number
   created_at: string
 }
 
@@ -254,26 +275,6 @@ export interface WantEntry {
   date: string | null // YYYY-MM-DD
   costKcal?: number // 固定値テーブル以外のコストを使う場合
   label?: string
-}
-
-export interface LightMealResult {
-  shortfallKcal: number // 欲望コスト − 週の貯金 − 運動ポイント（0未満は0）
-  count: number // 軽めの回数
-  exceedsWeeklyMax: boolean // 週7回を超える（運動か欲望をずらす提案が必要）
-}
-
-export interface WantGauge {
-  want: WantEntry
-  costKcal: number
-  targetKcal: number // ゲージの満タン値（週の欲望貯金で埋まらなかった分）
-  currentKcal: number
-  achieved: boolean
-  remainingLightMeals: number // あと軽め何回分か
-}
-
-export interface WantGaugeResult {
-  gauges: WantGauge[]
-  bonusKcal: number // 全ゲージを満たして余った分（翌週へ持ち越し）
 }
 
 export type RecoveryOption =
@@ -311,4 +312,64 @@ export interface CurrentMonthTargets {
   monthlyTargetKg: number
   dailySaving: DailySavingResult
   dailyIntakeKcal: number
+}
+
+// ===== v2.1 メシポゲージ（月で1本）・運動 =====
+
+export type ExerciseType = 'walking' | 'running' | 'weights' | 'cycling' | 'sports' | 'steps'
+
+export const EXERCISE_TYPE_LABELS: Record<ExerciseType, string> = {
+  walking: 'ウォーキング',
+  running: 'ランニング',
+  weights: '筋トレ',
+  cycling: '自転車',
+  sports: 'スポーツ',
+  steps: '歩数',
+}
+
+export const EXERCISE_TYPE_EMOJI: Record<ExerciseType, string> = {
+  walking: '🚶',
+  running: '🏃',
+  weights: '💪',
+  cycling: '🚴',
+  sports: '⚽',
+  steps: '👟',
+}
+
+// exercise_logs テーブルの1行
+export interface ExerciseLogRow {
+  id: string
+  user_id: string
+  log_date: string // YYYY-MM-DD（日本時間）
+  exercise_type: ExerciseType
+  minutes: number | null
+  steps: number | null
+  points: number
+  created_at: string
+}
+
+// その月のチート1件（頻度ベースはその月に入る回数をまとめて1件）
+export type MonthCheatEntry =
+  | { mode: 'dated'; row: MonthlyWantRow; date: string; costPt: number; done: boolean }
+  | {
+      mode: 'frequency'
+      row: MonthlyWantRow
+      timesPerWeek: number
+      timesInMonth: number
+      costPerTimePt: number
+      costPt: number // costPerTimePt × timesInMonth
+    }
+
+export interface MeshipoGauge {
+  targetPt: number // その月のチートのコスト合計
+  earnedPt: number // 今日までに貯まったpt
+  pacePt: number // 今日までに貯まっていたい量 = 目標 × 経過日数 ÷ 月の日数
+  onPace: boolean
+  behindPt: number // ペースに追いつくまであと◯pt
+  catchUpWalkingMinutes: number // 今日◯分歩くとペースに追いつく
+  extraPt: number // 目標を超えた分（追加でチートできる量）
+  projectedPt: number // 見込み = 貯まったpt + 残り日数 × 150
+  lightMealsNeeded: number // 今月あと必要な軽め（0なら軽めなしでOK）
+  fillRatio: number // ゲージの塗り（0〜1）
+  paceRatio: number // ペースの目印の位置（0〜1）
 }

@@ -35,7 +35,7 @@ export default function SettingsPage() {
             <div className="flex items-center gap-3">
               <span className="text-xl">★</span>
               <div className="text-left">
-                <p className="text-sm font-medium text-stone-100">欲望の登録</p>
+                <p className="text-sm font-medium text-stone-100">チートの登録</p>
                 <p className="text-stone-500 text-xs mt-0.5">日付指定・毎週の頻度</p>
               </div>
             </div>

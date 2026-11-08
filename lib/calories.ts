@@ -7,17 +7,19 @@ import {
   Gate,
   GatePlan,
   DailySavingResult,
-  WeeklyBudget,
   WantEntry,
-  LightMealResult,
-  WantGauge,
-  WantGaugeResult,
   RecoveryOption,
   GoalPlanRow,
   CurrentMonthTargets,
   MonthlyWantRow,
   MealChoice,
   MealSlot,
+  CheatType,
+  CheatItemSelection,
+  WantKind,
+  ExerciseType,
+  MonthCheatEntry,
+  MeshipoGauge,
 } from '@/types'
 import {
   KCAL_PER_KG,
@@ -30,11 +32,15 @@ import {
   AVG_DAYS_PER_MONTH,
   WANT_BUFFER_PER_DAY,
   LIGHT_MEAL_KCAL,
-  MAX_LIGHT_MEALS_PER_WEEK,
   WANT_COSTS,
   EXERCISE_POINTS,
   MEAL_RECORD_DELTA,
+  EXERCISE_PT_PER_MIN,
+  PT_PER_1000_STEPS,
+  RECORD_PAST_DAYS,
 } from '@/lib/calorieConstants'
+import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
+import { MEAL_EXAMPLES, MEAL_EXAMPLE_RANGE, MEAL_EXAMPLES_MAX, type MealExample } from '@/lib/mealExamples'
 
 // 基礎代謝計算（ハリス・ベネディクト式）
 export function calcBaseMetabolism(
@@ -154,13 +160,6 @@ export function getDayLabel(dateStr: string): string {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const EPSILON = 1e-9
-
-// a から b までの日数（同じ日なら0）
-function daysBetween(a: Date, b: Date): number {
-  const ua = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())
-  const ub = Date.UTC(b.getFullYear(), b.getMonth(), b.getDate())
-  return Math.round((ub - ua) / MS_PER_DAY)
-}
 
 function assertPeriodMonths(periodMonths: number) {
   if (!Number.isInteger(periodMonths) || periodMonths <= 0 || periodMonths % GATE_MONTHS !== 0) {
@@ -320,75 +319,10 @@ export function calcCurrentMonthTargets(
   }
 }
 
-// --- 6. 週の計算 ---
-
-// その週（月曜始まり）のうち、指定月に含まれる日数
-function countWeekDaysInMonth(weekStart: Date, year: number, month: number): number {
-  let count = 0
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(weekStart)
-    d.setDate(d.getDate() + i)
-    if (d.getFullYear() === year && d.getMonth() + 1 === month) count++
-  }
-  return count
-}
-
-// 週の欲望貯金 = 150 × その週の日数。month を渡すと、その月に含まれる日数で按分する
-export function calcWeeklyWantSaving(
-  date: Date,
-  month?: { year: number; month: number }
-): number {
-  const weekStart = getWeekStart(date)
-  const days = month ? countWeekDaysInMonth(weekStart, month.year, month.month) : 7
-  return WANT_BUFFER_PER_DAY * days
-}
-
-// 週の予算 = 月の残り予算 ÷ 残りの週数
-// 残りの週数は「この週の初日（月初より前なら月初）から月末までの日数 ÷ 7」。月をまたぐ週は日数で按分される
-export function calcWeeklyBudget(
-  monthRemainingKcal: number,
-  date: Date,
-  year: number,
-  month: number
-): WeeklyBudget {
-  const weekStart = getWeekStart(date)
-  const monthStart = new Date(year, month - 1, 1)
-  const monthEnd = new Date(year, month - 1, getDaysInMonth(year, month))
-  const from = weekStart > monthStart ? weekStart : monthStart
-
-  const daysInMonthThisWeek = countWeekDaysInMonth(weekStart, year, month)
-  const remainingDays = Math.max(0, daysBetween(from, monthEnd) + 1)
-  if (daysInMonthThisWeek === 0 || remainingDays === 0) {
-    return { budgetKcal: 0, daysInMonthThisWeek: 0, remainingDays, remainingWeeks: remainingDays / 7 }
-  }
-
-  return {
-    budgetKcal: Math.round((monthRemainingKcal * daysInMonthThisWeek) / remainingDays),
-    daysInMonthThisWeek,
-    remainingDays,
-    remainingWeeks: remainingDays / 7,
-  }
-}
-
-// --- 6-4. 貯金ゲージ・軽め回数・マイナス時 ---
+// --- 6-4. マイナス時 ---
 
 export function getWantCost(want: WantEntry): number {
   return want.costKcal ?? WANT_COSTS[want.kind]
-}
-
-export function sumWantCosts(wants: WantEntry[]): number {
-  return wants.reduce((sum, w) => sum + getWantCost(w), 0)
-}
-
-// 軽めの回数 = 切り上げ((欲望コスト − 週の貯金 − 運動ポイント) ÷ 150)
-export function calcLightMealCount(
-  wantCostKcal: number,
-  weekSavingKcal: number,
-  exercisePoints: number = 0
-): LightMealResult {
-  const shortfallKcal = Math.max(0, wantCostKcal - weekSavingKcal - exercisePoints)
-  const count = Math.ceil(shortfallKcal / LIGHT_MEAL_KCAL)
-  return { shortfallKcal, count, exceedsWeeklyMax: count > MAX_LIGHT_MEALS_PER_WEEK }
 }
 
 // 日付指定の欲望を日付順、その後ろに頻度型（date: null）を登録順で並べる
@@ -398,40 +332,6 @@ function sortWants(wants: WantEntry[]): WantEntry[] {
     .sort((a, b) => (a.date as string).localeCompare(b.date as string))
   const undated = wants.filter((w) => w.date === null)
   return [...dated, ...undated]
-}
-
-// 欲望ごとの貯金ゲージ
-// 1. 週の欲望貯金を順に充て、埋まらなかった分を各ゲージの満タン値にする
-// 2. 軽め・運動で貯めた分（＋前週の持ち越し）を順にゲージへ入れる。余りはボーナスとして持ち越す
-export function calcWantGauges(
-  wants: WantEntry[],
-  weekSavingKcal: number,
-  earnedKcal: number,
-  carryOverKcal: number = 0
-): WantGaugeResult {
-  let saving = weekSavingKcal
-  let earned = earnedKcal + carryOverKcal
-
-  const gauges: WantGauge[] = sortWants(wants).map((want) => {
-    const costKcal = getWantCost(want)
-    const covered = Math.min(costKcal, Math.max(0, saving))
-    saving -= covered
-    const targetKcal = costKcal - covered
-
-    const currentKcal = Math.min(targetKcal, Math.max(0, earned))
-    earned -= currentKcal
-
-    return {
-      want,
-      costKcal,
-      targetKcal,
-      currentKcal,
-      achieved: currentKcal >= targetKcal,
-      remainingLightMeals: Math.ceil((targetKcal - currentKcal) / LIGHT_MEAL_KCAL),
-    }
-  })
-
-  return { gauges, bonusKcal: Math.max(0, earned) }
 }
 
 // マイナス時の解消方法（ユーザーが選ぶ。欲望の予定は自動で動かさない）
@@ -455,117 +355,14 @@ export function calcRecoveryOptions(deficitKcal: number, wants: WantEntry[]): Re
   ]
 }
 
-// --- 欲望の月登録 → その週の WantEntry[] ---
-
-// 日付指定はその週に落ちるもの、頻度型は times_per_week 回ぶん（date: null）を並べる
-export function expandMonthlyWantsForWeek(
-  rows: Pick<MonthlyWantRow, 'id' | 'kind' | 'scheduled_date' | 'times_per_week' | 'label' | 'is_active'>[],
-  weekStart: Date
-): WantEntry[] {
-  // 日付比較は日本時間の YYYY-MM-DD で揃える（formatDate は UTC なので使わない）
-  const weekDates = new Set(
-    Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(weekStart)
-      d.setDate(d.getDate() + i)
-      return formatDateJST(d)
-    })
-  )
-  const entries: WantEntry[] = []
-
-  for (const row of rows) {
-    if (row.is_active === false) continue
-
-    if (row.scheduled_date) {
-      if (!weekDates.has(row.scheduled_date)) continue
-      entries.push({
-        id: row.id,
-        kind: row.kind,
-        date: row.scheduled_date,
-        label: row.label ?? undefined,
-      })
-      continue
-    }
-
-    const times = row.times_per_week ?? 0
-    for (let i = 0; i < times; i++) {
-      entries.push({
-        id: `${row.id}#${i + 1}`,
-        kind: row.kind,
-        date: null,
-        label: row.label ?? undefined,
-      })
-    }
-  }
-
-  return entries
-}
-
-// その月の日付指定欲望（カレンダー表示用）
-export function filterDatedWantsInMonth(
-  rows: Pick<MonthlyWantRow, 'scheduled_date' | 'is_active'>[],
-  year: number,
-  month: number
-): typeof rows {
-  const prefix = `${year}-${String(month).padStart(2, '0')}`
-  return rows.filter(
-    (r) => r.is_active !== false && r.scheduled_date != null && r.scheduled_date.startsWith(prefix)
-  )
-}
-
-// 食事記録の差分合計（軽め・がっつり）
-export function sumMealLogDelta(
-  logs: { choice: MealChoice }[]
-): number {
-  return logs.reduce((sum, log) => sum + MEAL_RECORD_DELTA[log.choice], 0)
-}
-
-// 今週すでに「控えめ」にした回数（軽め消化）
-export function countLightMealLogs(
-  logs: { choice: MealChoice }[]
-): number {
-  return logs.filter((l) => l.choice === 'light').length
-}
-
-// 目安パターン（和/洋）。合計は「1日の目安 − 欲望用150」
-export type MealPatternStyle = 'washoku' | 'yoshoku'
-
-export interface MealPatternSlot {
+// 朝・昼・夜の目安kcal（毎日共通）。合計は「1日の目安 − 欲望用150」
+export interface MealSlotTarget {
   slot: MealSlot
   label: string
-  items: string
   kcal: number
 }
 
-export interface MealPattern {
-  style: MealPatternStyle
-  styleLabel: string
-  slots: MealPatternSlot[]
-  totalKcal: number
-}
-
-const PATTERN_TEMPLATES: Record<
-  MealPatternStyle,
-  { styleLabel: string; ratios: [number, number, number]; items: [string, string, string] }
-> = {
-  washoku: {
-    styleLabel: '和',
-    ratios: [0.25, 0.35, 0.4],
-    items: [
-      'ご飯一膳、卵、味噌汁、小鉢',
-      '定食（主菜・ご飯・汁物・小鉢）',
-      '定食（主菜・ご飯・汁物・野菜）',
-    ],
-  },
-  yoshoku: {
-    styleLabel: '洋',
-    ratios: [0.25, 0.35, 0.4],
-    items: [
-      'トースト、卵、ヨーグルト',
-      'プレート（主菜・サラダ・パン）',
-      'プレート（主菜・サラダ・スープ）',
-    ],
-  },
-}
+const SLOT_RATIOS: [number, number, number] = [0.25, 0.35, 0.4]
 
 const SLOT_LABELS: Record<MealSlot, string> = {
   morning: '朝',
@@ -573,27 +370,286 @@ const SLOT_LABELS: Record<MealSlot, string> = {
   dinner: '夜',
 }
 
-export function buildMealPatterns(dailyIntakeKcal: number): MealPattern[] {
+export function calcMealSlotTargets(dailyIntakeKcal: number): MealSlotTarget[] {
   const totalKcal = Math.max(0, dailyIntakeKcal - WANT_BUFFER_PER_DAY)
   const slots: MealSlot[] = ['morning', 'lunch', 'dinner']
-
-  return (Object.keys(PATTERN_TEMPLATES) as MealPatternStyle[]).map((style) => {
-    const tpl = PATTERN_TEMPLATES[style]
-    let allocated = 0
-    const patternSlots: MealPatternSlot[] = slots.map((slot, i) => {
-      const kcal =
-        i === slots.length - 1
-          ? totalKcal - allocated
-          : Math.round(totalKcal * tpl.ratios[i])
-      allocated += kcal
-      return {
-        slot,
-        label: SLOT_LABELS[slot],
-        items: tpl.items[i],
-        kcal,
-      }
-    })
-    return { style, styleLabel: tpl.styleLabel, slots: patternSlots, totalKcal }
+  let allocated = 0
+  return slots.map((slot, i) => {
+    const kcal =
+      i === slots.length - 1 ? totalKcal - allocated : Math.round(totalKcal * SLOT_RATIOS[i])
+    allocated += kcal
+    return { slot, label: SLOT_LABELS[slot], kcal }
   })
 }
 
+// --- 10-2. 目安くらいの例・がっつりの例 ---
+
+export interface MealExamples {
+  normal: MealExample[] // 目安 ±15%
+  hearty: MealExample[] // 目安 + 300 以上
+  heartyMinKcal: number
+}
+
+// 近い順に並べ、同じジャンルは先に2件までにして和・洋・外食・コンビニを混ぜる。表示は近い順
+function pickMixed(candidates: MealExample[], distance: (m: MealExample) => number): MealExample[] {
+  const sorted = [...candidates].sort((a, b) => distance(a) - distance(b))
+  const picked: MealExample[] = []
+  const perGenre = new Map<string, number>()
+  for (const m of sorted) {
+    if (picked.length >= MEAL_EXAMPLES_MAX) break
+    const n = perGenre.get(m.genre) ?? 0
+    if (n >= 2) continue
+    perGenre.set(m.genre, n + 1)
+    picked.push(m)
+  }
+  for (const m of sorted) {
+    if (picked.length >= MEAL_EXAMPLES_MAX) break
+    if (!picked.includes(m)) picked.push(m)
+  }
+  return picked.sort((a, b) => distance(a) - distance(b))
+}
+
+export function pickMealExamples(
+  slot: MealSlot,
+  targetKcal: number,
+  menu: MealExample[] = MEAL_EXAMPLES
+): MealExamples {
+  const forSlot = menu.filter((m) => m.slots.includes(slot))
+  const range = targetKcal * MEAL_EXAMPLE_RANGE
+  const heartyMin = targetKcal + MEAL_RECORD_DELTA.hearty
+
+  return {
+    normal: pickMixed(
+      forSlot.filter((m) => Math.abs(m.kcal - targetKcal) <= range),
+      (m) => Math.abs(m.kcal - targetKcal)
+    ),
+    hearty: pickMixed(
+      forSlot.filter((m) => m.kcal >= heartyMin),
+      (m) => m.kcal - heartyMin
+    ),
+    heartyMinKcal: heartyMin,
+  }
+}
+
+// --- 10-3. チートを細かく登録する ---
+
+export function sumCheatItemsKcal(items: Pick<CheatItemSelection, 'kcal' | 'qty'>[]): number {
+  return items.reduce((sum, i) => sum + i.kcal * i.qty, 0)
+}
+
+// 置き換え：合計 − その食事の目安（下回るときは0。チートでptは増えない）/ 上乗せ：合計
+export function calcCheatCost(cheatType: CheatType, totalKcal: number, slotTargetKcal: number): number {
+  return cheatType === 'replace' ? Math.max(0, totalKcal - slotTargetKcal) : totalKcal
+}
+
+function genreDef(genre: string) {
+  return CHEAT_GENRE_MAP[genre as CheatGenre] ?? null
+}
+
+// 初期タイプ = 最初に選んだアイテムのジャンルのタイプ
+export function getDefaultCheatType(items: Pick<CheatItemSelection, 'genre'>[]): CheatType {
+  return (items.length > 0 && genreDef(items[0].genre)?.defaultType) || 'replace'
+}
+
+// 既存の kind 列に入れる値（最初のアイテムのジャンルから）
+export function getCheatKind(items: Pick<CheatItemSelection, 'genre'>[]): WantKind {
+  return (items.length > 0 && genreDef(items[0].genre)?.kind) || 'other'
+}
+
+// 一覧に出す名前（例：家系＋ライス、ビール500ml×2＋唐揚げ）
+export function buildCheatLabel(items: Pick<CheatItemSelection, 'name' | 'qty'>[]): string {
+  return items.map((i) => (i.qty > 1 ? `${i.name}×${i.qty}` : i.name)).join('＋')
+}
+
+// 「このチートは ◯pt ＝ 軽め◯回 or ウォーキング◯分」
+export function convertCheatCost(costPt: number): { lightMeals: number; walkingMinutes: number } {
+  const pt = Math.max(0, costPt)
+  return {
+    lightMeals: Math.ceil(pt / LIGHT_MEAL_KCAL),
+    walkingMinutes: Math.ceil(pt / EXERCISE_PT_PER_MIN.walking),
+  }
+}
+
+// 登録済みチート1回分のコスト。中身を選んでいない行は WANT_COSTS をデフォルトに使う
+// 置き換えの食事が未指定なら夜として扱う
+export function getMonthlyWantRowCost(
+  row: Pick<MonthlyWantRow, 'kind' | 'cheat_type' | 'replace_slot' | 'total_kcal'>,
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+): number {
+  if (row.cheat_type == null || row.total_kcal == null) return WANT_COSTS[row.kind]
+  const slot = row.replace_slot ?? 'dinner'
+  const target = slotTargets.find((t) => t.slot === slot)?.kcal ?? 0
+  return calcCheatCost(row.cheat_type, row.total_kcal, target)
+}
+
+// よく使うアイテムを上に（使った回数順。同じ回数なら元の並び）
+export function sortCheatItemsByUsage(
+  items: CheatItem[],
+  history: { items: Pick<CheatItemSelection, 'genre' | 'name' | 'qty'>[] | null }[]
+): CheatItem[] {
+  const counts = new Map<string, number>()
+  for (const row of history) {
+    for (const i of row.items ?? []) {
+      const key = `${i.genre}:${i.name}`
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+  }
+  return items
+    .map((item, index) => ({ item, index, count: counts.get(`${item.genre}:${item.name}`) ?? 0 }))
+    .sort((a, b) => b.count - a.count || a.index - b.index)
+    .map((x) => x.item)
+}
+
+// --- 10-4. メシポゲージは「月で1本」 ---
+
+function monthPrefix(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}`
+}
+
+// 頻度ベース（週◯回）がその月に入る回数 = 週の回数 × 月の日数 ÷ 7 を四捨五入
+export function countFrequencyInMonth(timesPerWeek: number, year: number, month: number): number {
+  return Math.round((timesPerWeek * getDaysInMonth(year, month)) / 7)
+}
+
+// その月のチート一覧。日付指定は日付順、その後ろに頻度ベース。今日より前の日付指定は済み
+export function expandCheatsForMonth(
+  rows: MonthlyWantRow[],
+  year: number,
+  month: number,
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[],
+  today: string // YYYY-MM-DD（日本時間）
+): MonthCheatEntry[] {
+  const prefix = monthPrefix(year, month)
+  const active = rows.filter((r) => r.is_active !== false)
+
+  const dated: MonthCheatEntry[] = active
+    .filter((r) => r.scheduled_date != null && r.scheduled_date.startsWith(prefix))
+    .sort((a, b) => (a.scheduled_date as string).localeCompare(b.scheduled_date as string))
+    .map((row) => ({
+      mode: 'dated',
+      row,
+      date: row.scheduled_date as string,
+      costPt: getMonthlyWantRowCost(row, slotTargets),
+      done: (row.scheduled_date as string) < today,
+    }))
+
+  const frequency: MonthCheatEntry[] = active
+    .filter((r) => r.scheduled_date == null && (r.times_per_week ?? 0) > 0)
+    .map((row) => {
+      const timesPerWeek = row.times_per_week as number
+      const timesInMonth = countFrequencyInMonth(timesPerWeek, year, month)
+      const costPerTimePt = getMonthlyWantRowCost(row, slotTargets)
+      return { mode: 'frequency', row, timesPerWeek, timesInMonth, costPerTimePt, costPt: costPerTimePt * timesInMonth }
+    })
+
+  return [...dated, ...frequency]
+}
+
+export function sumMonthCheatCosts(entries: Pick<MonthCheatEntry, 'costPt'>[]): number {
+  return entries.reduce((sum, e) => sum + e.costPt, 0)
+}
+
+// 置き換えのチートが入っている「日付:食事」（その食事の記録はptに入れない）
+// 日付のない頻度ベースは対象外
+export function getReplacedMealKeys(
+  rows: Pick<MonthlyWantRow, 'scheduled_date' | 'cheat_type' | 'replace_slot' | 'is_active'>[]
+): Set<string> {
+  const keys = new Set<string>()
+  for (const r of rows) {
+    if (r.is_active === false || !r.scheduled_date || r.cheat_type !== 'replace') continue
+    keys.add(`${r.scheduled_date}:${r.replace_slot ?? 'dinner'}`)
+  }
+  return keys
+}
+
+// 今日までに貯まったpt（どの日の分も同じ月のプールに入る）
+// = 経過日数 × 150 + 記録の3択（軽め +150 / がっつり −300）+ 運動のpt
+// 経過日数は今日を含む。置き換えたチートがある食事の記録は数えない（コストが二重に引かれないように）
+export function calcMonthEarnedPt(input: {
+  year: number
+  month: number
+  today: string // YYYY-MM-DD（日本時間）
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  exerciseLogs: { log_date: string; points: number }[]
+  replacedMealKeys?: Set<string>
+}): number {
+  const { year, month, today, mealLogs, exerciseLogs, replacedMealKeys } = input
+  const prefix = monthPrefix(year, month)
+  const inMonth = (d: string) => d.startsWith(prefix) && d <= today
+  const elapsedDays = today.startsWith(prefix) ? Number(today.slice(8, 10)) : today > prefix ? getDaysInMonth(year, month) : 0
+
+  const mealPt = mealLogs
+    .filter((l) => inMonth(l.log_date) && !replacedMealKeys?.has(`${l.log_date}:${l.slot}`))
+    .reduce((sum, l) => sum - MEAL_RECORD_DELTA[l.choice], 0)
+  const exercisePt = exerciseLogs.filter((l) => inMonth(l.log_date)).reduce((sum, l) => sum + l.points, 0)
+
+  return elapsedDays * WANT_BUFFER_PER_DAY + mealPt + exercisePt
+}
+
+export function calcMeshipoGauge(input: {
+  targetPt: number
+  earnedPt: number
+  dayOfMonth: number // 今日が何日目か（今日を含む）
+  daysInMonth: number
+}): MeshipoGauge {
+  const { targetPt, earnedPt, dayOfMonth, daysInMonth } = input
+  const pacePt = Math.round((targetPt * dayOfMonth) / daysInMonth)
+  const behindPt = Math.max(0, pacePt - earnedPt)
+  const projectedPt = earnedPt + (daysInMonth - dayOfMonth) * WANT_BUFFER_PER_DAY
+  return {
+    targetPt,
+    earnedPt,
+    pacePt,
+    onPace: behindPt === 0,
+    behindPt,
+    catchUpWalkingMinutes: Math.ceil(behindPt / EXERCISE_PT_PER_MIN.walking),
+    extraPt: Math.max(0, earnedPt - targetPt),
+    projectedPt,
+    lightMealsNeeded: Math.max(0, Math.ceil((targetPt - projectedPt) / LIGHT_MEAL_KCAL)),
+    fillRatio: targetPt > 0 ? Math.min(1, Math.max(0, earnedPt / targetPt)) : 1,
+    paceRatio: Math.min(1, dayOfMonth / daysInMonth),
+  }
+}
+
+// --- 10-5. 運動の記録 ---
+
+// 種類×時間（1分あたりのpt）か、歩数（1000歩 = 35pt、端数は切り捨て）
+export function calcExercisePoints(
+  input: { type: Exclude<ExerciseType, 'steps'>; minutes: number } | { type: 'steps'; steps: number }
+): number {
+  if (input.type === 'steps') return Math.floor((Math.max(0, input.steps) * PT_PER_1000_STEPS) / 1000)
+  return Math.max(0, Math.round(input.minutes)) * EXERCISE_PT_PER_MIN[input.type]
+}
+
+// --- 10-7. 過去の日の記録 ---
+// 日付はすべて日本時間の YYYY-MM-DD で扱う
+
+// YYYY-MM-DD を days 日ずらす（月・年またぎ対応）
+export function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d) + days * MS_PER_DAY).toISOString().slice(0, 10)
+}
+
+// YYYY-MM-DD → その日の日本時間の正午（calcCurrentMonthTargets などに渡す用）
+export function dateStrToJSTDate(dateStr: string): Date {
+  return new Date(`${dateStr}T12:00:00+09:00`)
+}
+
+// 記録できる日付の範囲：7日前〜今日（未来は不可）
+export function getRecordableDateRange(today: string): { min: string; max: string } {
+  return { min: addDaysToDateStr(today, -RECORD_PAST_DAYS), max: today }
+}
+
+export function isRecordableDate(dateStr: string, today: string): boolean {
+  const { min, max } = getRecordableDateRange(today)
+  return dateStr >= min && dateStr <= max
+}
+
+const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土']
+
+// 「11/7（土）」
+export function formatMonthDayWeekday(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const weekday = WEEKDAY_LABELS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]
+  return `${m}/${d}（${weekday}）`
+}

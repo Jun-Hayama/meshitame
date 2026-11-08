@@ -6,7 +6,7 @@ type Tab = 'home' | 'wants' | 'weight' | 'settings'
 
 const TABS: { id: Tab; href: string; emoji: string; label: string }[] = [
   { id: 'home', href: '/', emoji: '🏠', label: '今日' },
-  { id: 'wants', href: '/wants', emoji: '★', label: '欲望' },
+  { id: 'wants', href: '/wants', emoji: '★', label: 'チート' },
   { id: 'weight', href: '/weight', emoji: '⚖️', label: '体重' },
   { id: 'settings', href: '/settings', emoji: '⚙️', label: '設定' },
 ]

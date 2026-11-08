@@ -38,13 +38,13 @@ export const MEAL_RECORD_DELTA = {
 
 // 軽め
 export const LIGHT_MEAL_KCAL = -MEAL_RECORD_DELTA.light // 軽め1回 = 控えめ1食（150kcal）
-export const MAX_LIGHT_MEALS_PER_WEEK = 7
 
 // 欲望のコスト
 export const WANT_COSTS: Record<WantKind, number> = {
   ramen: 500, // ラーメン
   drinking_party: 1000, // 飲み会
   evening_drink: 300, // 晩酌1回（ビール2本＋つまみ）
+  other: 300, // その他（中身を選んだチートは total_kcal を使うので、ふつうは使われない）
 }
 
 // メシポイント（1pt = 1kcal）
@@ -54,3 +54,17 @@ export const EXERCISE_POINTS = {
   weights_60min: 300, // 筋トレ60分
   running_30min: 300, // ランニング30分
 } as const
+
+// 運動の1分あたりpt（10-5）。ウォーキング30分 = 150pt など上の値と一致させる
+export const EXERCISE_PT_PER_MIN = {
+  walking: 5, // ウォーキング
+  running: 10, // ランニング
+  weights: 5, // 筋トレ
+  cycling: 7, // 自転車
+  sports: 7, // スポーツ
+} as const
+// 歩数：1000歩 = 35pt
+export const PT_PER_1000_STEPS = 35
+
+// 過去の日の記録（10-7）：さかのぼれる日数（今日を含めて8日分）
+export const RECORD_PAST_DAYS = 7
