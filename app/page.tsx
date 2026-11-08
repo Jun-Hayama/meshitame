@@ -83,67 +83,70 @@ export default function Home() {
   const isToday = viewDate === today
 
   useEffect(() => {
+    async function load(userId: string) {
+      const [
+        { data: goalData, error: goalErr },
+        { data: wantData, error: wantErr },
+        { data: mealData, error: mealErr },
+        { data: exerciseData, error: exerciseErr },
+        { data: weightData, error: weightErr },
+      ] = await Promise.all([
+        supabase.from('goal_plans').select('*').eq('user_id', userId).eq('is_active', true).maybeSingle(),
+        supabase.from('monthly_wants').select('*').eq('user_id', userId).eq('is_active', true),
+        supabase
+          .from('meal_logs')
+          .select('*')
+          .eq('user_id', userId)
+          .gte('log_date', loadFrom)
+          .lte('log_date', today),
+        supabase
+          .from('exercise_logs')
+          .select('*')
+          .eq('user_id', userId)
+          .gte('log_date', loadFrom)
+          .lte('log_date', today),
+        supabase
+          .from('weight_logs')
+          .select('*')
+          .eq('user_id', userId)
+          .gte('measured_at', weightLoadFrom)
+          .lte('measured_at', today),
+      ])
+
+      const missing = (e: { message: string; code?: string } | null) =>
+        !!e && (e.message.includes('relation') || e.code === '42P01')
+      if (goalErr) setError(goalErr.message)
+      if (wantErr && !missing(wantErr)) setError(wantErr.message)
+      if (mealErr && !missing(mealErr)) setError(mealErr.message)
+      if (exerciseErr && !missing(exerciseErr)) setError(exerciseErr.message)
+      if (weightErr) setError(weightErr.message)
+
+      if (missing(wantErr) || missing(mealErr)) {
+        setError('DBの migration_v2_monthly_wants.sql を Supabase で実行してください')
+      } else if (missing(exerciseErr)) {
+        setError('DBの migration_v2_1_cheats_exercise.sql を Supabase で実行してください')
+      }
+
+      // 有効な目標がなければ初回設定へ（読み込みエラーのときは留まってエラーを出す）
+      if (!goalData && !goalErr) {
+        router.replace('/setup')
+        return
+      }
+
+      setGoal((goalData as GoalPlanRow) ?? null)
+      setWants((wantData as MonthlyWantRow[]) || [])
+      setMealLogs((mealData as MealLogRow[]) || [])
+      setExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
+      setWeightLogs((weightData as WeightLog[]) || [])
+      setLoading(false)
+    }
+
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
       setUserId(user.id)
       load(user.id)
     })
-  }, [router])
-
-  async function load(userId: string) {
-    setLoading(true)
-    setError(null)
-
-    const [
-      { data: goalData, error: goalErr },
-      { data: wantData, error: wantErr },
-      { data: mealData, error: mealErr },
-      { data: exerciseData, error: exerciseErr },
-      { data: weightData, error: weightErr },
-    ] = await Promise.all([
-      supabase.from('goal_plans').select('*').eq('user_id', userId).eq('is_active', true).maybeSingle(),
-      supabase.from('monthly_wants').select('*').eq('user_id', userId).eq('is_active', true),
-      supabase
-        .from('meal_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('log_date', loadFrom)
-        .lte('log_date', today),
-      supabase
-        .from('exercise_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('log_date', loadFrom)
-        .lte('log_date', today),
-      supabase
-        .from('weight_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('measured_at', weightLoadFrom)
-        .lte('measured_at', today),
-    ])
-
-    const missing = (e: { message: string; code?: string } | null) =>
-      !!e && (e.message.includes('relation') || e.code === '42P01')
-    if (goalErr) setError(goalErr.message)
-    if (wantErr && !missing(wantErr)) setError(wantErr.message)
-    if (mealErr && !missing(mealErr)) setError(mealErr.message)
-    if (exerciseErr && !missing(exerciseErr)) setError(exerciseErr.message)
-    if (weightErr) setError(weightErr.message)
-
-    if (missing(wantErr) || missing(mealErr)) {
-      setError('DBの migration_v2_monthly_wants.sql を Supabase で実行してください')
-    } else if (missing(exerciseErr)) {
-      setError('DBの migration_v2_1_cheats_exercise.sql を Supabase で実行してください')
-    }
-
-    setGoal((goalData as GoalPlanRow) ?? null)
-    setWants((wantData as MonthlyWantRow[]) || [])
-    setMealLogs((mealData as MealLogRow[]) || [])
-    setExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
-    setWeightLogs((weightData as WeightLog[]) || [])
-    setLoading(false)
-  }
+  }, [router, today, loadFrom, weightLoadFrom])
 
   // 今月の目安（メシポゲージのコスト計算用）。月初に決めて保存した値（11-3）
   const { targets: monthTargets, error: targetsError, setTargets: setMonthTargets } = useMonthTargets(
@@ -243,6 +246,7 @@ export default function Home() {
     )
   }
 
+  // 目標がないときはふつう /setup に移るので、ここに来るのは目標の読み込みに失敗したときだけ
   if (!goal) {
     return (
       <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col justify-center px-6 pb-24">

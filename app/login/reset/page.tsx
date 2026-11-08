@@ -53,18 +53,8 @@ export default function ResetPasswordPage() {
 
     setIsError(false)
     setMessage('パスワードを更新しました。ホームへ移動します…')
-    const { data: { user } } = await supabase.auth.getUser()
-    let hasProfile = false
-    if (user) {
-      const { data: profile } = await supabase
-        .from('user_profiles')
-        .select('id')
-        .eq('id', user.id)
-        .single()
-      hasProfile = !!profile
-    }
     setTimeout(() => {
-      router.replace(hasProfile ? '/' : '/settings/profile')
+      router.replace('/')
     }, 800)
   }
 

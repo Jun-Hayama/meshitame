@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 仮アイコン：stone-950 の背景に amber-400 の「メ」。差し替えるときはこのファイルを直して PNG を作り直す -->
+  <rect width="512" height="512" fill="#0c0a09"/>
+  <g fill="none" stroke="#fbbf24" stroke-width="56" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M350 108 C 336 246 266 346 146 406"/>
+    <path d="M190 226 C 246 256 298 300 330 348"/>
+  </g>
+</svg>

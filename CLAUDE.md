@@ -70,10 +70,7 @@ app/
 ├── weight/page.tsx       # 体重（7日平均・進捗チャート・入力・記録の一覧）
 ├── settings/page.tsx     # 設定（目標設定への入口）
 ├── login/                # ログイン・パスワードリセット
-├── plan/, plan/new/      # v1（週プラン・AIプラン生成）。触らない・拡張しない
-├── settings/profile/     # v1のプロフィール設定。触らない
 └── api/
-    ├── generate-plan/    # v1のAIプラン生成。v2では使わない
     └── ai-check/         # v1の体重チェックイン相談。今はどこからも呼ばない（フェーズ3でv2向けに見直す）
 components/
 ├── BottomNav.tsx         # 今日 / チート / 体重 / 設定
@@ -82,7 +79,8 @@ components/
 ├── ExerciseSheet.tsx
 ├── WeightEntryCard.tsx   # 体重の入力（ホーム・/weight 共通）
 ├── WeightChart.tsx       # 進捗チャート（SVG）
-└── MilestoneCards.tsx
+├── MilestoneCards.tsx
+└── ServiceWorkerRegister.tsx # public/sw.js の登録（layout.tsx）
 lib/
 ├── calories.ts           # v2の計算はすべてここ（純粋関数）
 ├── calorieConstants.ts   # 数値の初期値はすべてここ
@@ -93,6 +91,11 @@ lib/
 ├── milestones.ts         # ゲート達成・3%・5%（useMilestones）。goal_milestones の読み書き
 └── supabase.ts
 types/index.ts
+public/
+├── manifest.json         # PWA（名前・テーマ色・アイコン）
+├── sw.js                 # Service Worker。キャッシュは一切しない（fetch はネットワークに流すだけ）
+├── icon.svg              # アイコンの元（仮）。差し替えたら icon-192 / icon-512 / apple-touch-icon(180) の PNG を作り直す
+└── icon-192.png, icon-512.png, apple-touch-icon.png
 docs/v2-spec.md           # 仕様書
 migration_*.sql           # DB変更（Supabase SQL Editor で手動実行）
 ```
@@ -108,7 +111,7 @@ migration_*.sql           # DB変更（Supabase SQL Editor で手動実行）
 - 計算は `lib/calories.ts` に純粋関数で書き、テストを付ける。画面側で計算し直さない
 - 数値は `lib/calorieConstants.ts` に定数として置く。マジックナンバーを画面に書かない
 - 計算にAIを使わない
-- 日付は日本時間の `YYYY-MM-DD` で扱う（`formatDateJST` を使う）。週は月曜始まり（`getWeekStart`）
+- 日付は日本時間の `YYYY-MM-DD` で扱う（`formatDateJST` を使う）。計算は月単位（週の区切りは使わない）
 
 
 
@@ -118,7 +121,7 @@ migration_*.sql           # DB変更（Supabase SQL Editor で手動実行）
 - 新しいテーブルには RLS（`auth.uid() = user_id`）と `authenticated` への grant を必ず付ける
 - 既存データを壊さない変更にする（列追加は null 可、制約の作り直しは既存値が通るか確認）
 - 主要テーブル（v2）：`user_profiles`、`goal_plans`（有効は1人1行）、`monthly_wants`、`meal_logs`、`exercise_logs`、`custom_cheat_items`、`weight_logs`（1人1日1件）、`monthly_targets`（goal_plan・月ごとに1行）、`goal_milestones`
-- v1のテーブル（`week_plans`、`plan_blocks`、`weekly_intentions` など）はv2では使わない
+- v1のテーブル（`week_plans`、`plan_blocks`、`weekly_intentions` など）はv2では使わない。v1の画面・コードは削除済み。テーブルは残してある（消すかはv2が落ち着いてから判断）
 
 
 

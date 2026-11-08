@@ -17,14 +17,10 @@ export default function LoginPage() {
   const [checkingSession, setCheckingSession] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
+    // ログイン済みならホームへ（目標が未設定なら、ホームが /setup に案内する）
+    supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { setCheckingSession(false); return }
-      const { data: profile } = await supabase
-        .from('user_profiles')
-        .select('id')
-        .eq('id', user.id)
-        .single()
-      router.replace(profile ? '/' : '/settings/profile')
+      router.replace('/')
     })
   }, [router])
 
@@ -82,14 +78,7 @@ export default function LoginPage() {
       return
     }
 
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) { router.replace('/login'); return }
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('id')
-      .eq('id', user.id)
-      .single()
-    router.replace(profile ? '/' : '/settings/profile')
+    router.replace('/')
   }
 
   if (checkingSession) {

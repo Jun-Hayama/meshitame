@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { WeightLog } from '@/types'
+
+// フェーズ3でv2向けに見直す。今はv1の呼び出し形のまま型だけ付けている
+interface AiCheckRequest {
+  checkinData: {
+    weight_changed: boolean
+    feel_body_change: boolean
+    plan_adherence: string
+  }
+  recentWeights: Pick<WeightLog, 'measured_at' | 'weight_kg'>[]
+  userProfile: { target_weight_kg: number; weight_kg: number }
+}
 
 export async function POST(req: NextRequest) {
-  const { checkinData, recentWeights, userProfile } = await req.json()
+  const { checkinData, recentWeights, userProfile }: AiCheckRequest = await req.json()
 
   const systemPrompt = `
 あなたは「メシため」のAIコーチです。
@@ -33,7 +45,7 @@ export async function POST(req: NextRequest) {
 - 計画の達成度: ${checkinData.plan_adherence}
 
 ## 直近の体重推移
-${recentWeights.map((w: any) => `${w.measured_at}: ${w.weight_kg}kg`).join('\n')}
+${recentWeights.map((w) => `${w.measured_at}: ${w.weight_kg}kg`).join('\n')}
 
 ## ユーザー情報
 - 目標体重: ${userProfile.target_weight_kg}kg

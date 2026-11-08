@@ -41,34 +41,6 @@ export default function SettingsPage() {
             </div>
             <span className="text-stone-600">›</span>
           </button>
-
-          <button
-            onClick={() => router.push('/settings/profile')}
-            className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
-          >
-            <div className="flex items-center gap-3">
-              <span className="text-xl">👤</span>
-              <div className="text-left">
-                <p className="text-sm font-medium text-stone-100">プロフィール・カロリー設定</p>
-                <p className="text-stone-500 text-xs mt-0.5">身長・体重・活動量</p>
-              </div>
-            </div>
-            <span className="text-stone-600">›</span>
-          </button>
-
-          <button
-            onClick={() => router.push('/plan')}
-            className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
-          >
-            <div className="flex items-center gap-3">
-              <span className="text-xl">📅</span>
-              <div className="text-left">
-                <p className="text-sm font-medium text-stone-100">旧・週プラン</p>
-                <p className="text-stone-500 text-xs mt-0.5">v1のAI補完フロー（暫定）</p>
-              </div>
-            </div>
-            <span className="text-stone-600">›</span>
-          </button>
         </main>
       </div>
 
