@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { BottomNav } from '@/components/BottomNav'
 import { WeightLog } from '@/types'
 
 export default function WeightPage() {
@@ -248,24 +249,7 @@ export default function WeightPage() {
 
       </div>
 
-      {/* ボトムナビ */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-stone-950 border-t border-stone-800 px-8 py-4 flex justify-around">
-        <NavItem label="今日" emoji="🏠" onClick={() => router.push('/')} />
-        <NavItem label="週プラン" emoji="📅" onClick={() => router.push('/plan')} />
-        <NavItem label="体重" emoji="⚖️" active />
-        <NavItem label="設定" emoji="⚙️" onClick={() => router.push('/settings')} />
-      </nav>
+      <BottomNav active="weight" />
     </div>
-  )
-}
-
-function NavItem({ label, emoji, active, onClick }: {
-  label: string; emoji: string; active?: boolean; onClick?: () => void
-}) {
-  return (
-    <button onClick={onClick} className="flex flex-col items-center gap-1">
-      <span className="text-xl">{emoji}</span>
-      <span className={`text-xs ${active ? 'text-amber-400' : 'text-stone-600'}`}>{label}</span>
-    </button>
   )
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { BottomNav } from '@/components/BottomNav'
 
 export default function SettingsPage() {
   const router = useRouter()
@@ -14,6 +15,34 @@ export default function SettingsPage() {
 
         <main className="px-5 space-y-3">
           <button
+            onClick={() => router.push('/setup')}
+            className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-xl">🎯</span>
+              <div className="text-left">
+                <p className="text-sm font-medium text-stone-100">目標設定</p>
+                <p className="text-stone-500 text-xs mt-0.5">目標体重・期間・ゲート</p>
+              </div>
+            </div>
+            <span className="text-stone-600">›</span>
+          </button>
+
+          <button
+            onClick={() => router.push('/wants')}
+            className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-xl">★</span>
+              <div className="text-left">
+                <p className="text-sm font-medium text-stone-100">欲望の登録</p>
+                <p className="text-stone-500 text-xs mt-0.5">日付指定・毎週の頻度</p>
+              </div>
+            </div>
+            <span className="text-stone-600">›</span>
+          </button>
+
+          <button
             onClick={() => router.push('/settings/profile')}
             className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
           >
@@ -26,27 +55,24 @@ export default function SettingsPage() {
             </div>
             <span className="text-stone-600">›</span>
           </button>
+
+          <button
+            onClick={() => router.push('/plan')}
+            className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-xl">📅</span>
+              <div className="text-left">
+                <p className="text-sm font-medium text-stone-100">旧・週プラン</p>
+                <p className="text-stone-500 text-xs mt-0.5">v1のAI補完フロー（暫定）</p>
+              </div>
+            </div>
+            <span className="text-stone-600">›</span>
+          </button>
         </main>
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-stone-950 border-t border-stone-800 px-8 py-4 flex justify-around">
-        <button onClick={() => router.push('/')} className="flex flex-col items-center gap-1">
-          <span className="text-xl">🏠</span>
-          <span className="text-xs text-stone-600">今日</span>
-        </button>
-        <button onClick={() => router.push('/plan')} className="flex flex-col items-center gap-1">
-          <span className="text-xl">📅</span>
-          <span className="text-xs text-stone-600">週プラン</span>
-        </button>
-        <button onClick={() => router.push('/weight')} className="flex flex-col items-center gap-1">
-          <span className="text-xl">⚖️</span>
-          <span className="text-xs text-stone-600">体重</span>
-        </button>
-        <button className="flex flex-col items-center gap-1">
-          <span className="text-xl">⚙️</span>
-          <span className="text-xs text-amber-400">設定</span>
-        </button>
-      </nav>
+      <BottomNav active="settings" />
     </div>
   )
 }

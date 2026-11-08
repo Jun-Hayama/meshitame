@@ -4,13 +4,16 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
+type Mode = 'login' | 'signup' | 'forgot'
+
 export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [isSignUp, setIsSignUp] = useState(false)
+  const [mode, setMode] = useState<Mode>('login')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const [isError, setIsError] = useState(false)
   const [checkingSession, setCheckingSession] = useState(true)
 
   useEffect(() => {
@@ -25,24 +28,57 @@ export default function LoginPage() {
     })
   }, [router])
 
+  function switchMode(next: Mode) {
+    setMode(next)
+    setMessage(null)
+    setIsError(false)
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    setError(null)
+    setMessage(null)
+    setIsError(false)
 
-    const { error: authError } = isSignUp
-      ? await supabase.auth.signUp({ email, password })
-      : await supabase.auth.signInWithPassword({ email, password })
-
-    setLoading(false)
-
-    if (authError) {
-      setError(authError.message)
+    if (mode === 'forgot') {
+      const redirectTo = `${window.location.origin}/login/reset`
+      const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      })
+      setLoading(false)
+      if (authError) {
+        setIsError(true)
+        setMessage(authError.message)
+        return
+      }
+      setMessage('パスワード再設定用のメールを送信しました。メール内のリンクから新しいパスワードを設定してください。')
       return
     }
 
-    if (isSignUp) {
-      setError('確認メールを送信しました。メール内のリンクから登録を完了してください。')
+    if (mode === 'signup') {
+      const { data, error: authError } = await supabase.auth.signUp({ email, password })
+      setLoading(false)
+      if (authError) {
+        setIsError(true)
+        setMessage(authError.message)
+        return
+      }
+      // 既存ユーザー再登録時は identities が空になる（メール列挙防止）
+      if (data.user && (data.user.identities?.length ?? 0) === 0) {
+        setIsError(true)
+        setMessage('このメールアドレスはすでに登録済みです。ログインするか、パスワードを忘れた場合は再設定してください。')
+        return
+      }
+      setMessage('確認メールを送信しました。メール内のリンクから登録を完了してください。')
+      return
+    }
+
+    const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
+    setLoading(false)
+
+    if (authError) {
+      setIsError(true)
+      setMessage(authError.message)
       return
     }
 
@@ -64,6 +100,11 @@ export default function LoginPage() {
     )
   }
 
+  const submitLabel =
+    mode === 'signup' ? 'アカウント作成'
+      : mode === 'forgot' ? '再設定メールを送る'
+        : 'ログイン'
+
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col justify-center px-6">
       <div className="max-w-sm mx-auto w-full">
@@ -72,7 +113,9 @@ export default function LoginPage() {
             <span className="text-amber-400">メシ</span>ため
           </h1>
           <p className="text-stone-500 text-sm">
-            食べたいものだけ食べる。そのために逆算して動く。
+            {mode === 'forgot'
+              ? '登録メールアドレスに再設定リンクを送ります'
+              : '食べたいものだけ食べる。そのために逆算して動く。'}
           </p>
         </header>
 
@@ -93,26 +136,28 @@ export default function LoginPage() {
             />
           </div>
 
-          <div>
-            <label htmlFor="password" className="text-stone-500 text-xs mb-1.5 block">
-              パスワード
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              minLength={6}
-              autoComplete={isSignUp ? 'new-password' : 'current-password'}
-              className="w-full bg-stone-900 border border-stone-800 rounded-2xl px-4 py-3 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-amber-400/50"
-              placeholder="6文字以上"
-            />
-          </div>
+          {mode !== 'forgot' && (
+            <div>
+              <label htmlFor="password" className="text-stone-500 text-xs mb-1.5 block">
+                パスワード
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                className="w-full bg-stone-900 border border-stone-800 rounded-2xl px-4 py-3 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-amber-400/50"
+                placeholder="6文字以上"
+              />
+            </div>
+          )}
 
-          {error && (
-            <p className={`text-sm px-1 ${error.includes('確認メール') ? 'text-amber-400' : 'text-rose-400'}`}>
-              {error}
+          {message && (
+            <p className={`text-sm px-1 ${isError ? 'text-rose-400' : 'text-amber-400'}`}>
+              {message}
             </p>
           )}
 
@@ -121,20 +166,48 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-amber-400 text-stone-950 font-bold py-3.5 rounded-2xl text-sm disabled:opacity-50"
           >
-            {loading ? '処理中...' : isSignUp ? 'アカウント作成' : 'ログイン'}
+            {loading ? '処理中...' : submitLabel}
           </button>
         </form>
 
-        <button
-          type="button"
-          onClick={() => {
-            setIsSignUp(!isSignUp)
-            setError(null)
-          }}
-          className="w-full mt-6 text-stone-500 text-sm text-center"
-        >
-          {isSignUp ? 'すでにアカウントをお持ちの方はログイン' : '初めての方はアカウント作成'}
-        </button>
+        <div className="mt-6 space-y-3 text-center">
+          {mode === 'login' && (
+            <>
+              <button
+                type="button"
+                onClick={() => switchMode('forgot')}
+                className="w-full text-stone-500 text-sm"
+              >
+                パスワードを忘れた方
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode('signup')}
+                className="w-full text-stone-500 text-sm"
+              >
+                初めての方はアカウント作成
+              </button>
+            </>
+          )}
+          {mode === 'signup' && (
+            <button
+              type="button"
+              onClick={() => switchMode('login')}
+              className="w-full text-stone-500 text-sm"
+            >
+              すでにアカウントをお持ちの方はログイン
+            </button>
+          )}
+          {mode === 'forgot' && (
+            <button
+              type="button"
+              onClick={() => switchMode('login')}
+              className="w-full text-stone-500 text-sm"
+            >
+              ログインに戻る
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

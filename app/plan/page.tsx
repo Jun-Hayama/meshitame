@@ -57,11 +57,6 @@ export default function PlanPage() {
   // 変更ボトムシート
   const [changeSheet, setChangeSheet] = useState<PlanBlock | null>(null)
 
-  // 変更後のリプランプロンプト（バッファで吸収しきれなかった場合のみ）
-  const [postChange, setPostChange] = useState<{ block: PlanBlock; delta: number } | null>(null)
-  const [replanLoading, setReplanLoading] = useState(false)
-  const [replanMessage, setReplanMessage] = useState<string | null>(null)
-
   const weekStart = getWeekStart()
   const weekDates = getWeekDates(weekStart)
 
@@ -103,21 +98,15 @@ export default function PlanPage() {
 
   async function doUpsertBuffer(newTotal: number) {
     if (!weekPlan || !userId) return
-    const next: CalorieBuffer = buffer
-      ? { ...buffer, total_buffer: newTotal, updated_at: new Date().toISOString() }
-      : { id: '', user_id: userId, week_plan_id: weekPlan.id, total_buffer: newTotal, updated_at: new Date().toISOString() }
-    setBuffer(next)
-
-    if (buffer?.id) {
-      await supabase.from('calorie_buffers')
-        .update({ total_buffer: newTotal, updated_at: new Date().toISOString() })
-        .eq('id', buffer.id)
-    } else {
-      const { data } = await supabase.from('calorie_buffers')
-        .insert({ user_id: userId, week_plan_id: weekPlan.id, total_buffer: newTotal })
-        .select().single()
-      if (data) setBuffer(data as CalorieBuffer)
-    }
+    const { data } = await supabase
+      .from('calorie_buffers')
+      .upsert(
+        { user_id: userId, week_plan_id: weekPlan.id, total_buffer: newTotal, updated_at: new Date().toISOString() },
+        { onConflict: 'week_plan_id' }
+      )
+      .select()
+      .maybeSingle()
+    setBuffer(data ?? (buffer ? { ...buffer, total_buffer: newTotal } : null))
   }
 
   // ──────────────────────────────────────────────────
@@ -186,8 +175,8 @@ export default function PlanPage() {
         setToast(`🍺 メシポから${delta}kcal充当しました`)
         setTimeout(() => setToast(null), 4000)
       } else {
-        // バッファでは吸収しきれない → リプランプロンプト
-        setPostChange({ block: updated, delta: Math.abs(newBufferTotal) })
+        setToast(`⚠️ メシポ不足 (${newBufferTotal.toLocaleString()}pt)`)
+        setTimeout(() => setToast(null), 4000)
       }
     }
   }
@@ -198,56 +187,6 @@ export default function PlanPage() {
     await doUpsertBuffer(newTotal)
     setUseBufferSheet(false)
     router.push('/plan/new')
-  }
-
-  // AIリプラン実行（postChange の delta を使用）
-  async function callReplan() {
-    if (!postChange || !weekPlan || !userId) return
-    setReplanLoading(true)
-
-    const today = formatDate(new Date())
-    const { data: remainingBlocks } = await supabase
-      .from('plan_blocks').select('*')
-      .eq('week_plan_id', weekPlan.id).gte('plan_date', today).order('plan_date')
-
-    const res = await fetch('/api/replan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        deviation: {
-          deviation_type: 'ate_more',
-          description: `${postChange.block.name}を変更 (${postChange.block.actual_name})`,
-          calorie_delta: postChange.delta,
-        },
-        remainingBlocks: remainingBlocks || [],
-        userProfile: { base_calories: userBaseCalories },
-      }),
-    })
-
-    if (!res.ok) { setReplanLoading(false); return }
-    const data = await res.json()
-
-    if (data.updated_blocks?.length > 0) {
-      for (const b of data.updated_blocks) {
-        if (b.id) await supabase.from('plan_blocks')
-          .update({ name: b.name, calories: b.calories, duration_min: b.duration_min }).eq('id', b.id)
-      }
-    }
-    if (data.added_blocks?.length > 0) {
-      await supabase.from('plan_blocks').insert(
-        data.added_blocks.map((b: any, i: number) => ({
-          week_plan_id: weekPlan.id, user_id: userId,
-          plan_date: b.plan_date, block_type: b.block_type,
-          name: b.name, calories: b.calories, duration_min: b.duration_min ?? null,
-          is_want: false, is_ai_generated: true, is_flexible: true,
-          sort_order: 100 + i, status: 'planned',
-        }))
-      )
-    }
-
-    setReplanLoading(false)
-    setReplanMessage(data.message || 'プランを更新しました！')
-    loadData()
   }
 
   // ──────────────────────────────────────────────────
@@ -273,6 +212,9 @@ export default function PlanPage() {
 
   // バッファ表示用
   const bufferTotal = buffer?.total_buffer ?? 0
+  const targetBuffer = buffer?.target_buffer ?? bufferTotal
+  const bufferDiff = bufferTotal - targetBuffer
+  const isAboveTarget = bufferDiff >= 0
   const bufferBeer  = toBeerCount(Math.abs(bufferTotal))
   const bufferRamen = toRamenCount(Math.abs(bufferTotal))
 
@@ -315,56 +257,44 @@ export default function PlanPage() {
       {/* ─── メシポバッファ ─── */}
       {weekPlan && (
         <div className="px-5 mb-3">
-          {bufferTotal > 0 ? (
-            <div className="bg-amber-400/10 border border-amber-400/20 rounded-2xl px-4 py-3">
+          {buffer ? (
+            <div className={`rounded-2xl px-4 py-3 border ${
+              isAboveTarget
+                ? 'bg-amber-400/10 border-amber-400/20'
+                : 'bg-rose-400/10 border-rose-400/20'
+            }`}>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-amber-400 text-xs font-semibold mb-0.5">🍺 メシポ残高</p>
-                  <p className="text-2xl font-bold text-amber-400">{bufferTotal.toLocaleString()}pt</p>
+                  <p className={`text-xs font-semibold mb-0.5 ${isAboveTarget ? 'text-amber-400' : 'text-rose-400'}`}>
+                    🪙 メシポ残高
+                  </p>
+                  <p className={`text-2xl font-bold ${isAboveTarget ? 'text-amber-400' : 'text-rose-400'}`}>
+                    {bufferTotal.toLocaleString()}pt
+                  </p>
                   <p className="text-stone-500 text-xs mt-0.5">（{bufferEquivText}）</p>
+                  <p className={`text-xs mt-0.5 ${isAboveTarget ? 'text-amber-400/70' : 'text-rose-400/70'}`}>
+                    目標 {targetBuffer.toLocaleString()}pt{' '}
+                    {isAboveTarget
+                      ? `▲ +${bufferDiff.toLocaleString()}pt 順調！`
+                      : `▼ ${bufferDiff.toLocaleString()}pt 挽回しよう`}
+                  </p>
                 </div>
-                <button
-                  onClick={() => setUseBufferSheet(true)}
-                  className="bg-amber-400 text-stone-950 text-xs font-bold px-3 py-2 rounded-xl"
-                >
-                  使う →
-                </button>
+                {bufferTotal > 0 && (
+                  <button
+                    onClick={() => setUseBufferSheet(true)}
+                    className="bg-amber-400 text-stone-950 text-xs font-bold px-3 py-2 rounded-xl"
+                  >
+                    使う →
+                  </button>
+                )}
               </div>
-            </div>
-          ) : bufferTotal < 0 ? (
-            <div className="bg-rose-400/10 border border-rose-400/20 rounded-2xl px-4 py-3">
-              <p className="text-rose-400 text-xs font-semibold mb-0.5">⚠️ メシポ赤字</p>
-              <p className="text-xl font-bold text-rose-400">{bufferTotal.toLocaleString()}pt</p>
-              <p className="text-stone-500 text-xs mt-1">運動か食事で調整しよう</p>
-              <button
-                onClick={() => router.push('/log/deviation')}
-                className="mt-2 text-xs bg-rose-400/20 text-rose-400 px-3 py-1.5 rounded-xl"
-              >
-                AIにリプランしてもらう
-              </button>
             </div>
           ) : (
             <div className="bg-stone-900 rounded-2xl px-4 py-3">
-              <p className="text-stone-500 text-xs font-semibold mb-0.5">🍺 メシポ残高</p>
+              <p className="text-stone-500 text-xs font-semibold mb-0.5">🪙 メシポ残高</p>
               <p className="text-stone-600 text-sm">まだ貯まっていません。ヘルシー食や運動でメシポを貯めよう！</p>
             </div>
           )}
-        </div>
-      )}
-
-      {/* 今週の運動で稼いだ分（バッファ外の完了運動） */}
-      {weekPlan && weekExerciseBurned > 0 && bufferTotal === 0 && (
-        <div className="px-5 mb-3">
-          <div className="bg-emerald-400/10 border border-emerald-400/20 rounded-2xl px-4 py-3">
-            <p className="text-emerald-400 text-xs font-semibold mb-1.5">今週の運動で稼いだ分</p>
-            <div className="flex gap-4 text-sm text-stone-300">
-              {toBeerCount(weekExerciseBurned) > 0  && <span>🍺 ビール{toBeerCount(weekExerciseBurned)}本分</span>}
-              {toRamenCount(weekExerciseBurned) > 0 && <span>🍜 ラーメン{toRamenCount(weekExerciseBurned)}杯分</span>}
-              {toBeerCount(weekExerciseBurned) === 0 && toRamenCount(weekExerciseBurned) === 0 && (
-                <span className="text-stone-500">{weekExerciseBurned}kcal分</span>
-              )}
-            </div>
-          </div>
         </div>
       )}
 
@@ -532,62 +462,6 @@ export default function PlanPage() {
           onClose={() => setChangeSheet(null)}
           onApply={(name, cal, status) => applyChange(changeSheet, name, cal, status)}
         />
-      )}
-
-      {/* バッファ不足時リプランオーバーレイ */}
-      {postChange && (
-        <div className="fixed inset-0 z-50 bg-stone-950/98 flex flex-col overflow-y-auto">
-          <div className="max-w-md mx-auto w-full px-5 pt-16 pb-10">
-
-            {replanMessage ? (
-              <div className="space-y-6">
-                <div className="bg-stone-900 rounded-3xl p-6">
-                  <p className="text-2xl mb-3">🔄</p>
-                  <p className="text-amber-400 font-bold mb-2">プランを更新したよ！</p>
-                  <p className="text-stone-300 text-sm leading-relaxed">{replanMessage}</p>
-                </div>
-                <button
-                  onClick={() => { setPostChange(null); setReplanMessage(null) }}
-                  className="w-full bg-amber-400 text-stone-950 font-bold py-4 rounded-2xl"
-                >
-                  更新されたプランを見る →
-                </button>
-              </div>
-            ) : replanLoading ? (
-              <div className="flex flex-col items-center justify-center py-20 gap-4">
-                <p className="text-amber-400 text-base">AIがプランを調整中...</p>
-                <p className="text-stone-600 text-xs">欲望ブロックは守るよ</p>
-              </div>
-            ) : (
-              <>
-                <p className="text-lg font-bold mb-1">
-                  {postChange.block.actual_name || postChange.block.name}に変えた
-                </p>
-                <p className="text-rose-400 font-bold text-base mb-2">
-                  +{postChange.delta}kcal バッファでは吸収しきれない
-                </p>
-                <p className="text-stone-500 text-xs mb-6">
-                  メシ貯めを使い切っても{postChange.delta}kcal足りません
-                </p>
-                <p className="text-stone-400 text-sm mb-4">どうする？</p>
-                <div className="space-y-2">
-                  <ReplanOption emoji="💪" label="運動を増やして帳消し"
-                    onClick={() => { setPostChange(null); router.push('/plan/new') }} />
-                  <ReplanOption emoji="🥗" label="明日の食事を軽めにする"
-                    onClick={() => { setPostChange(null); router.push('/plan/new') }} />
-                  <ReplanOption emoji="📅" label="AIに残りを自動調整してもらう"
-                    onClick={callReplan} />
-                </div>
-                <button
-                  onClick={() => setPostChange(null)}
-                  className="w-full mt-4 text-stone-500 text-sm py-3"
-                >
-                  → 今は何もしない
-                </button>
-              </>
-            )}
-          </div>
-        </div>
       )}
 
       {/* ボトムナビ */}
@@ -1059,15 +933,6 @@ function ChangeSheet({
         )}
       </div>
     </div>
-  )
-}
-
-function ReplanOption({ emoji, label, onClick }: { emoji: string; label: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="w-full flex items-center gap-4 px-4 py-4 bg-stone-900 rounded-2xl text-left">
-      <span className="text-xl w-7 text-center">{emoji}</span>
-      <span className="text-sm text-stone-200">{label}</span>
-    </button>
   )
 }
 

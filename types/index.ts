@@ -121,6 +121,8 @@ export interface CalorieBuffer {
   user_id: string
   week_plan_id: string
   total_buffer: number
+  initial_buffer: number
+  target_buffer: number
   updated_at: string
 }
 
@@ -164,3 +166,149 @@ export const MEAL_TYPES: BlockType[] = [
   'meal_dinner',
   'meal_drinks',
 ]
+
+// ===== v2 計算ロジック（docs/v2-spec.md 6章） =====
+
+// 減量上限チェックの結果
+export interface LossLimitCheck {
+  bmi: number
+  standardWeightKg: number // BMI22の体重（参考表示）
+  annualLimitRate: number // 年の上限率
+  limitKg: number // 期間で按分した上限kg
+  targetLossKg: number
+  periodMonths: number
+  withinLimit: boolean
+  suggestedPeriodMonths: number | null // 上限を超える場合の提案期間（3ヶ月単位）
+}
+
+export interface Gate {
+  index: number // 1始まり
+  ratio: number
+  lossKg: number // このゲートで落とすkg
+  targetWeightKg: number // ゲート終了時の目標体重
+  endMonth: number // 開始から何ヶ月目で終わるか
+}
+
+export interface GatePlan {
+  gates: Gate[]
+  gate1MinKg: number // ゲート1の最低ライン（現体重の3%）
+  gate1MeetsMinimum: boolean
+}
+
+export interface DailySavingResult {
+  savingKcal: number // 実際に使う1日の貯金
+  uncappedKcal: number // 上限をかける前の値
+  capKcal: number // min(750, TDEE − 基礎代謝 − 150)
+  capped: boolean
+}
+
+export interface WeeklyBudget {
+  budgetKcal: number
+  daysInMonthThisWeek: number // この週のうち対象月に含まれる日数
+  remainingDays: number // 対象月の残り日数（この週の初日から月末まで）
+  remainingWeeks: number // remainingDays ÷ 7
+}
+
+export type WantKind = 'ramen' | 'drinking_party' | 'evening_drink'
+
+export const WANT_KIND_LABELS: Record<WantKind, string> = {
+  ramen: 'ラーメン',
+  drinking_party: '飲み会',
+  evening_drink: '晩酌',
+}
+
+export const WANT_KIND_EMOJI: Record<WantKind, string> = {
+  ramen: '🍜',
+  drinking_party: '🍻',
+  evening_drink: '🍺',
+}
+
+// monthly_wants テーブルの1行
+export interface MonthlyWantRow {
+  id: string
+  user_id: string
+  kind: WantKind
+  scheduled_date: string | null // YYYY-MM-DD（日付指定）
+  times_per_week: number | null // 頻度ベース
+  label: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export type MealSlot = 'morning' | 'lunch' | 'dinner'
+export type MealChoice = 'light' | 'normal' | 'hearty'
+
+export interface MealLogRow {
+  id: string
+  user_id: string
+  log_date: string
+  slot: MealSlot
+  choice: MealChoice
+  created_at: string
+}
+
+// その週の欲望1件（頻度型は回数分を date: null で並べる）
+export interface WantEntry {
+  id: string
+  kind: WantKind
+  date: string | null // YYYY-MM-DD
+  costKcal?: number // 固定値テーブル以外のコストを使う場合
+  label?: string
+}
+
+export interface LightMealResult {
+  shortfallKcal: number // 欲望コスト − 週の貯金 − 運動ポイント（0未満は0）
+  count: number // 軽めの回数
+  exceedsWeeklyMax: boolean // 週7回を超える（運動か欲望をずらす提案が必要）
+}
+
+export interface WantGauge {
+  want: WantEntry
+  costKcal: number
+  targetKcal: number // ゲージの満タン値（週の欲望貯金で埋まらなかった分）
+  currentKcal: number
+  achieved: boolean
+  remainingLightMeals: number // あと軽め何回分か
+}
+
+export interface WantGaugeResult {
+  gauges: WantGauge[]
+  bonusKcal: number // 全ゲージを満たして余った分（翌週へ持ち越し）
+}
+
+export type RecoveryOption =
+  | { type: 'exercise'; exercise: 'walking_30min'; count: number; points: number }
+  | { type: 'light_meals'; count: number; points: number }
+  | { type: 'swap_want'; wantId: string; kind: WantKind; points: number }
+
+// goal_plans テーブルの1行（入力値と目標の骨組み。1日の貯金・目安は gates から毎回計算する）
+export interface GoalPlanRow {
+  id: string
+  user_id: string
+  start_date: string // YYYY-MM-DD
+  period_months: number
+  height_cm: number
+  start_weight_kg: number
+  target_weight_kg: number
+  age: number
+  sex: 'male' | 'female' | 'other'
+  activity_level: 'low' | 'moderate' | 'high'
+  bmr: number
+  tdee: number
+  target_loss_kg: number
+  gates: Gate[]
+  is_active: boolean
+  created_at: string
+}
+
+// calcCurrentMonthTargets の結果
+export interface CurrentMonthTargets {
+  year: number
+  month: number // 1〜12（日本時間）
+  monthNumber: number // 開始月を1とした何ヶ月目か
+  gateIndex: number | null // 該当ゲート（期間外は null）
+  finished: boolean // 期間を過ぎている
+  monthlyTargetKg: number
+  dailySaving: DailySavingResult
+  dailyIntakeKcal: number
+}

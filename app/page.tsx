@@ -1,279 +1,170 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { PlanBlock, WeekPlan, CalorieBuffer, BLOCK_LABELS, MEAL_TYPES, EXERCISE_TYPES, BlockType } from '@/types'
-import { getWeekStart, formatDate } from '@/lib/calories'
+import { BottomNav } from '@/components/BottomNav'
+import {
+  WANT_KIND_EMOJI,
+  WANT_KIND_LABELS,
+  type GoalPlanRow,
+  type MealChoice,
+  type MealLogRow,
+  type MealSlot,
+  type MonthlyWantRow,
+} from '@/types'
+import {
+  buildMealPatterns,
+  calcCurrentMonthTargets,
+  calcLightMealCount,
+  calcWantGauges,
+  calcWeeklyWantSaving,
+  countLightMealLogs,
+  expandMonthlyWantsForWeek,
+  formatDateJST,
+  getWeekStart,
+  sumWantCosts,
+} from '@/lib/calories'
+import { MEAL_RECORD_DELTA } from '@/lib/calorieConstants'
 
-const MEAL_ORDER: BlockType[] = ['meal_morning', 'meal_lunch', 'meal_snack', 'meal_dinner', 'meal_drinks']
-const EXERCISE_ORDER: BlockType[] = ['exercise_weights', 'exercise_cardio', 'exercise_sport']
+const SLOTS: { slot: MealSlot; label: string }[] = [
+  { slot: 'morning', label: '朝' },
+  { slot: 'lunch', label: '昼' },
+  { slot: 'dinner', label: '夜' },
+]
 
-const MEAL_CATEGORIES = [
-  { label: 'ヘルシー', kcal: 400 },
-  { label: '普通', kcal: 600 },
-  { label: '和食', kcal: 650 },
-  { label: '洋食', kcal: 750 },
-  { label: 'ジャンキー', kcal: 900 },
-] as const
-
-const LARGE_EXTRA = 200
-
-const UNPLANNED_EXERCISE_OPTIONS = [
-  { name: 'ウォーキング30分', block_type: 'exercise_cardio' as BlockType, calories: 150, duration_min: 30 },
-  { name: 'ウォーキング60分', block_type: 'exercise_cardio' as BlockType, calories: 300, duration_min: 60 },
-  { name: 'ランニング30分', block_type: 'exercise_cardio' as BlockType, calories: 300, duration_min: 30 },
-  { name: '筋トレ30分', block_type: 'exercise_weights' as BlockType, calories: 200, duration_min: 30 },
-  { name: '筋トレ60分', block_type: 'exercise_weights' as BlockType, calories: 350, duration_min: 60 },
-] as const
-
-const BELOW_TARGET_MESSAGES = [
-  '🏃 30分歩くと +150pt だよ',
-  '🥗 夜をヘルシーにすると +200pt になるよ',
-] as const
-
-type BufferWithTarget = CalorieBuffer & { target_buffer?: number }
-type UnplannedStep = null | 'type' | 'meal' | 'exercise'
+const CHOICES: { choice: MealChoice; label: string }[] = [
+  { choice: 'light', label: '控えめ' },
+  { choice: 'normal', label: '目安どおり' },
+  { choice: 'hearty', label: 'がっつり' },
+]
 
 export default function Home() {
   const router = useRouter()
-  const [user, setUser] = useState<any>(null)
-  const [todayBlocks, setTodayBlocks] = useState<PlanBlock[]>([])
-  const [weekPlan, setWeekPlan] = useState<WeekPlan | null>(null)
   const [loading, setLoading] = useState(true)
-  const [buffer, setBuffer] = useState<BufferWithTarget | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
-  const [completingBlockId, setCompletingBlockId] = useState<string | null>(null)
-  const [selectedMealKcal, setSelectedMealKcal] = useState<number | null>(null)
-  const [mealExtraLarge, setMealExtraLarge] = useState(false)
-  const [unplannedStep, setUnplannedStep] = useState<UnplannedStep>(null)
-  const [selectedUnplannedExercise, setSelectedUnplannedExercise] = useState<number | null>(null)
-  const [encourageMsg] = useState(
-    () => BELOW_TARGET_MESSAGES[Math.floor(Math.random() * BELOW_TARGET_MESSAGES.length)]
-  )
-  const today = formatDate(new Date())
+  const [error, setError] = useState<string | null>(null)
+  const [goal, setGoal] = useState<GoalPlanRow | null>(null)
+  const [wants, setWants] = useState<MonthlyWantRow[]>([])
+  const [todayLogs, setTodayLogs] = useState<MealLogRow[]>([])
+  const [weekLogs, setWeekLogs] = useState<MealLogRow[]>([])
+  const [patternStyle, setPatternStyle] = useState<'washoku' | 'yoshoku'>('washoku')
+  const [savingSlot, setSavingSlot] = useState<MealSlot | null>(null)
+
+  const today = formatDateJST(new Date())
+  const weekStart = getWeekStart(new Date())
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
-      setUser(user)
-      loadData(user.id)
+      load(user.id)
     })
-  }, [])
+  }, [router])
 
-  async function loadData(userId: string) {
-    const weekStart = formatDate(getWeekStart())
+  async function load(userId: string) {
+    setLoading(true)
+    setError(null)
 
-    const [{ data: plan }, { data: blocks }] = await Promise.all([
-      supabase.from('week_plans')
+    const weekDates = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(weekStart)
+      d.setDate(d.getDate() + i)
+      return formatDateJST(d)
+    })
+
+    const [
+      { data: goalData, error: goalErr },
+      { data: wantData, error: wantErr },
+      { data: mealData, error: mealErr },
+    ] = await Promise.all([
+      supabase.from('goal_plans').select('*').eq('user_id', userId).eq('is_active', true).maybeSingle(),
+      supabase.from('monthly_wants').select('*').eq('user_id', userId).eq('is_active', true),
+      supabase
+        .from('meal_logs')
         .select('*')
         .eq('user_id', userId)
-        .eq('week_start', weekStart)
-        .single(),
-      supabase.from('plan_blocks')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('plan_date', today)
-        .order('sort_order'),
+        .gte('log_date', weekDates[0])
+        .lte('log_date', weekDates[6]),
     ])
 
-    setWeekPlan(plan)
-    setTodayBlocks(blocks || [])
+    if (goalErr) setError(goalErr.message)
+    if (wantErr && !wantErr.message.includes('relation')) setError(wantErr.message)
+    if (mealErr && !mealErr.message.includes('relation')) setError(mealErr.message)
 
-    if (plan) {
-      const { data: buf } = await supabase
-        .from('calorie_buffers').select('*').eq('week_plan_id', plan.id).maybeSingle()
-      setBuffer(buf ?? null)
-    } else {
-      setBuffer(null)
+    if (wantErr?.message.includes('relation') || mealErr?.message.includes('relation')) {
+      setError('DBの migration_v2_monthly_wants.sql を Supabase で実行してください')
     }
+
+    setGoal((goalData as GoalPlanRow) ?? null)
+    setWants((wantData as MonthlyWantRow[]) || [])
+    const logs = (mealData as MealLogRow[]) || []
+    setWeekLogs(logs)
+    setTodayLogs(logs.filter((l) => l.log_date === today))
     setLoading(false)
   }
 
-  function showToast(message: string) {
-    setToast(message)
-    setTimeout(() => setToast(null), 3000)
-  }
+  const monthTargets = useMemo(
+    () => (goal ? calcCurrentMonthTargets(goal, new Date()) : null),
+    [goal]
+  )
 
-  async function addToBuffer(delta: number) {
-    if (!weekPlan || !user) return
-    const newTotal = (buffer?.total_buffer ?? 0) + delta
-    const { data } = await supabase
-      .from('calorie_buffers')
+  const patterns = useMemo(
+    () => (monthTargets ? buildMealPatterns(monthTargets.dailyIntakeKcal) : []),
+    [monthTargets]
+  )
+  const activePattern = patterns.find((p) => p.style === patternStyle) ?? patterns[0]
+
+  const weekEntries = useMemo(
+    () => expandMonthlyWantsForWeek(wants, weekStart),
+    [wants, weekStart]
+  )
+  const weekSaving = calcWeeklyWantSaving(new Date())
+  const lightDone = countLightMealLogs(weekLogs)
+  const lightPlan = calcLightMealCount(sumWantCosts(weekEntries), weekSaving, 0)
+  // 控えめ1回 = 軽め150kcal としてゲージに入れる
+  const earnedKcal = lightDone * 150
+  const gauges = calcWantGauges(weekEntries, weekSaving, earnedKcal)
+
+  const nextWant = useMemo(() => {
+    const upcoming = wants
+      .filter((w) => w.scheduled_date && w.scheduled_date >= today)
+      .sort((a, b) => (a.scheduled_date as string).localeCompare(b.scheduled_date as string))
+    return upcoming[0] ?? null
+  }, [wants, today])
+
+  async function setMealChoice(slot: MealSlot, choice: MealChoice) {
+    setSavingSlot(slot)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) { router.push('/login'); return }
+
+    const { data, error: upErr } = await supabase
+      .from('meal_logs')
       .upsert(
-        { user_id: user.id, week_plan_id: weekPlan.id, total_buffer: newTotal, updated_at: new Date().toISOString() },
-        { onConflict: 'week_plan_id' }
+        { user_id: user.id, log_date: today, slot, choice },
+        { onConflict: 'user_id,log_date,slot' }
       )
       .select()
       .maybeSingle()
-    setBuffer(data ?? { ...(buffer as BufferWithTarget), total_buffer: newTotal })
-  }
 
-  function resetMealComplete() {
-    setCompletingBlockId(null)
-    setSelectedMealKcal(null)
-    setMealExtraLarge(false)
-  }
-
-  function resetUnplanned() {
-    setUnplannedStep(null)
-    setSelectedMealKcal(null)
-    setMealExtraLarge(false)
-    setSelectedUnplannedExercise(null)
-  }
-
-  function handleDoneClick(block: PlanBlock) {
-    resetUnplanned()
-    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
-    if (isExercise) {
-      markDone(block)
+    setSavingSlot(null)
+    if (upErr) {
+      setError(upErr.message)
       return
     }
-    setCompletingBlockId(block.id)
-    setSelectedMealKcal(null)
-    setMealExtraLarge(false)
-  }
-
-  async function confirmMealDone(block: PlanBlock) {
-    if (selectedMealKcal === null) return
-    const actual = selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
-    await markDone(block, actual)
-    resetMealComplete()
-  }
-
-  async function markDone(block: PlanBlock, actualCalories?: number) {
-    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
-    const updatePayload = isExercise
-      ? { status: 'done' as const }
-      : { status: 'done' as const, actual_calories: actualCalories ?? block.calories }
-
-    await supabase.from('plan_blocks').update(updatePayload).eq('id', block.id)
-    setTodayBlocks(prev => prev.map(b =>
-      b.id === block.id
-        ? { ...b, status: 'done', actual_calories: isExercise ? b.actual_calories : (actualCalories ?? b.calories) }
-        : b
-    ))
-
-    if (isExercise) {
-      showToast('💪 完了！予定通り！')
-    } else {
-      const actual = actualCalories ?? block.calories
-      const planned = block.calories
-      const diff = planned - actual
-      if (diff > 0) {
-        await addToBuffer(diff)
-        showToast(`🥗 えらい！メシポ +${diff}pt！`)
-      } else if (diff < 0) {
-        await addToBuffer(diff)
-        showToast(`😅 食べすぎ… メシポ -${Math.abs(diff)}pt`)
-      } else {
-        showToast('✅ 完了！予定通り！')
-      }
+    if (data) {
+      const row = data as MealLogRow
+      setTodayLogs((prev) => {
+        const rest = prev.filter((l) => l.slot !== slot)
+        return [...rest, row]
+      })
+      setWeekLogs((prev) => {
+        const rest = prev.filter((l) => !(l.log_date === today && l.slot === slot))
+        return [...rest, row]
+      })
     }
   }
 
-  async function markSkipped(block: PlanBlock) {
-    const isExercise = (EXERCISE_TYPES as string[]).includes(block.block_type)
-    await supabase.from('plan_blocks').update({ status: 'skipped' }).eq('id', block.id)
-    setTodayBlocks(prev => prev.map(b => b.id === block.id ? { ...b, status: 'skipped' } : b))
-
-    const kcal = block.calories || 0
-    if (!isExercise) {
-      await addToBuffer(kcal)
-      showToast(`🍱 スキップ！メシポ +${kcal}ptだよ`)
-    } else {
-      await addToBuffer(-kcal)
-      showToast(`😅 運動サボり… メシポ -${kcal}pt`)
-    }
+  function choiceFor(slot: MealSlot): MealChoice | null {
+    return todayLogs.find((l) => l.slot === slot)?.choice ?? null
   }
-
-  function openUnplanned() {
-    resetMealComplete()
-    setUnplannedStep('type')
-    setSelectedMealKcal(null)
-    setMealExtraLarge(false)
-    setSelectedUnplannedExercise(null)
-  }
-
-  async function confirmUnplannedMeal() {
-    if (!weekPlan || !user || selectedMealKcal === null) return
-    const category = MEAL_CATEGORIES.find(c => c.kcal === selectedMealKcal)
-    if (!category) return
-    const kcal = selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
-    const name = mealExtraLarge ? `${category.label}（大盛り）` : category.label
-
-    const { data: inserted, error } = await supabase.from('plan_blocks').insert({
-      week_plan_id: weekPlan.id,
-      user_id: user.id,
-      plan_date: today,
-      block_type: 'meal_snack',
-      name,
-      calories: kcal,
-      is_want: false,
-      is_ai_generated: false,
-      is_flexible: false,
-      status: 'done',
-      actual_calories: kcal,
-      sort_order: 999,
-    }).select().single()
-
-    if (error || !inserted) return
-
-    setTodayBlocks(prev => [...prev, inserted as PlanBlock])
-    await addToBuffer(-kcal)
-    showToast(`😅 予定外… メシポ -${kcal}pt`)
-    resetUnplanned()
-  }
-
-  async function confirmUnplannedExercise() {
-    if (!weekPlan || !user || selectedUnplannedExercise === null) return
-    const option = UNPLANNED_EXERCISE_OPTIONS[selectedUnplannedExercise]
-
-    const { data: inserted, error } = await supabase.from('plan_blocks').insert({
-      week_plan_id: weekPlan.id,
-      user_id: user.id,
-      plan_date: today,
-      block_type: option.block_type,
-      name: option.name,
-      calories: option.calories,
-      duration_min: option.duration_min,
-      is_want: false,
-      is_ai_generated: false,
-      is_flexible: false,
-      status: 'done',
-      sort_order: 999,
-    }).select().single()
-
-    if (error || !inserted) return
-
-    setTodayBlocks(prev => [...prev, inserted as PlanBlock])
-    await addToBuffer(option.calories)
-    showToast(`💪 予定外に頑張った！メシポ +${option.calories}pt！`)
-    resetUnplanned()
-  }
-
-  const doneCount = todayBlocks.filter(b => b.status === 'done').length
-  const wantDone = todayBlocks.filter(b => b.is_want && b.status === 'done').length
-  const wantTotal = todayBlocks.filter(b => b.is_want).length
-
-  const groupedMeals = MEAL_ORDER.map(type => ({
-    type,
-    blocks: todayBlocks.filter(b => b.block_type === type),
-  })).filter(g => g.blocks.length > 0)
-
-  const groupedExercise = EXERCISE_ORDER.map(type => ({
-    type,
-    blocks: todayBlocks.filter(b => b.block_type === type),
-  })).filter(g => g.blocks.length > 0)
-
-  const bufferTotal = buffer?.total_buffer ?? 0
-  const targetBuffer = buffer?.target_buffer ?? bufferTotal
-  const bufferDiff = bufferTotal - targetBuffer
-  const isAboveTarget = bufferDiff >= 0
-
-  const selectedMealActual = selectedMealKcal != null
-    ? selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
-    : null
 
   if (loading) {
     return (
@@ -283,433 +174,212 @@ export default function Home() {
     )
   }
 
+  if (!goal) {
+    return (
+      <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col justify-center px-6 pb-24">
+        <div className="max-w-sm mx-auto w-full text-center">
+          <h1 className="text-3xl font-bold mb-3">
+            <span className="text-amber-400">メシ</span>ため
+          </h1>
+          <p className="text-stone-500 text-sm mb-8">
+            まず目標を置くと、今日の目安と欲望ゲージが使えます
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push('/setup')}
+            className="w-full bg-amber-400 text-stone-950 font-bold py-3.5 rounded-2xl text-sm"
+          >
+            目標を設定する
+          </button>
+        </div>
+        <BottomNav active="home" />
+      </div>
+    )
+  }
+
+  const [, monthStr, dayStr] = today.split('-')
+  const weekday = ['日', '月', '火', '水', '木', '金', '土'][new Date().getDay()]
+
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-100 pb-24">
-      <div className="max-w-md mx-auto">
-      {/* ヘッダー */}
-      <header className="px-5 pt-12 pb-6">
-        <div className="flex items-baseline justify-between">
+    <div className="min-h-screen bg-stone-950 text-stone-100 pb-28">
+      <div className="max-w-md mx-auto px-5 pt-12">
+        <header className="mb-8 flex items-end justify-between">
           <div>
-            <p className="text-stone-500 text-sm mb-1">
-              {new Date().toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'long' })}
+            <p className="text-stone-500 text-xs mb-1">
+              {Number(monthStr)}月{Number(dayStr)}日{weekday}曜日
             </p>
-            <h1 className="text-3xl font-bold tracking-tight">
+            <h1 className="text-2xl font-bold tracking-tight">
               <span className="text-amber-400">メシ</span>ため
             </h1>
           </div>
-          <div className="text-right">
-            <p className="text-stone-500 text-xs">完了</p>
-            <p className="text-2xl font-bold text-amber-400">{doneCount}<span className="text-stone-500 text-sm">/{todayBlocks.length}</span></p>
-          </div>
-        </div>
+          <p className="text-stone-500 text-xs text-right">
+            目安 {monthTargets?.dailyIntakeKcal ?? '—'}kcal
+            <br />
+            貯金 {monthTargets?.dailySaving.savingKcal ?? '—'}kcal/日
+          </p>
+        </header>
 
-        {/* 欲望ブロック達成状況 */}
-        {wantTotal > 0 && (
-          <div className="mt-4 bg-amber-400/10 border border-amber-400/20 rounded-2xl px-4 py-3 flex items-center justify-between">
-            <div>
-              <p className="text-amber-400 font-semibold text-sm">今日の★欲望</p>
-              <p className="text-stone-300 text-xs mt-0.5">
-                {todayBlocks.filter(b => b.is_want).map(b => b.name).join('・')}
+        {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
+
+        {/* 今日の目安パターン */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-stone-300">今日の目安</h2>
+            <div className="flex gap-1 bg-stone-900 rounded-xl p-1">
+              {patterns.map((p) => (
+                <button
+                  key={p.style}
+                  type="button"
+                  onClick={() => setPatternStyle(p.style)}
+                  className={`px-3 py-1 rounded-lg text-xs ${
+                    patternStyle === p.style
+                      ? 'bg-amber-400 text-stone-950 font-bold'
+                      : 'text-stone-500'
+                  }`}
+                >
+                  {p.styleLabel}
+                </button>
+              ))}
+            </div>
+          </div>
+          {activePattern && (
+            <ul className="space-y-2">
+              {activePattern.slots.map((s) => (
+                <li key={s.slot} className="bg-stone-900 rounded-2xl px-4 py-3">
+                  <div className="flex justify-between items-baseline mb-1">
+                    <span className="text-sm font-medium">{s.label}</span>
+                    <span className="text-stone-500 text-xs">≒ {s.kcal}kcal</span>
+                  </div>
+                  <p className="text-stone-500 text-xs">{s.items}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* 3択記録 */}
+        <section className="mb-8">
+          <h2 className="text-sm font-semibold text-stone-300 mb-3">今日の記録</h2>
+          <div className="space-y-3">
+            {SLOTS.map(({ slot, label }) => {
+              const selected = choiceFor(slot)
+              return (
+                <div key={slot} className="bg-stone-900 rounded-2xl px-4 py-3">
+                  <p className="text-sm font-medium mb-2">{label}</p>
+                  <div className="flex gap-2">
+                    {CHOICES.map(({ choice, label: cLabel }) => (
+                      <button
+                        key={choice}
+                        type="button"
+                        disabled={savingSlot === slot}
+                        onClick={() => setMealChoice(slot, choice)}
+                        className={`flex-1 py-2 rounded-xl text-xs ${
+                          selected === choice
+                            ? 'bg-amber-400 text-stone-950 font-bold'
+                            : 'bg-stone-800 text-stone-400'
+                        }`}
+                      >
+                        {cLabel}
+                        {selected === choice && MEAL_RECORD_DELTA[choice] !== 0 && (
+                          <span className="block text-[10px] opacity-80">
+                            {MEAL_RECORD_DELTA[choice] > 0 ? '+' : ''}
+                            {MEAL_RECORD_DELTA[choice]}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+
+        {/* 貯金ゲージ */}
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-stone-300">今週の欲望ゲージ</h2>
+            <button
+              type="button"
+              onClick={() => router.push('/wants')}
+              className="text-amber-400 text-xs"
+            >
+              編集
+            </button>
+          </div>
+
+          {weekEntries.length === 0 ? (
+            <button
+              type="button"
+              onClick={() => router.push('/wants')}
+              className="w-full bg-stone-900 rounded-2xl px-4 py-6 text-center"
+            >
+              <p className="text-stone-400 text-sm mb-1">まだ欲望がありません</p>
+              <p className="text-amber-400 text-xs">タップして追加</p>
+            </button>
+          ) : (
+            <ul className="space-y-3">
+              {gauges.gauges.map((g) => {
+                const pct = g.targetKcal === 0 ? 100 : Math.round((g.currentKcal / g.targetKcal) * 100)
+                const name = g.want.label || WANT_KIND_LABELS[g.want.kind]
+                return (
+                  <li key={g.want.id} className="bg-stone-900 rounded-2xl px-4 py-3">
+                    <div className="flex justify-between items-baseline mb-2">
+                      <span className="text-sm font-medium">
+                        {WANT_KIND_EMOJI[g.want.kind]} {name}
+                        {g.want.date ? (
+                          <span className="text-stone-500 text-xs ml-2">
+                            {g.want.date.slice(5).replace('-', '/')}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="text-xs text-stone-500">
+                        {g.achieved
+                          ? '★達成！'
+                          : g.targetKcal === 0
+                            ? '貯金でカバー'
+                            : `${g.currentKcal}/${g.targetKcal}kcal`}
+                      </span>
+                    </div>
+                    <div className="h-2 bg-stone-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-amber-400 rounded-full transition-all"
+                        style={{ width: `${Math.min(100, pct)}%` }}
+                      />
+                    </div>
+                    {!g.achieved && g.targetKcal > 0 && (
+                      <p className="text-stone-600 text-[11px] mt-1.5">
+                        あと軽め{g.remainingLightMeals}回分
+                      </p>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          <p className="text-stone-500 text-xs mt-3">
+            今週の軽め {lightDone}/{lightPlan.count}回
+            {lightPlan.exceedsWeeklyMax && (
+              <span className="text-amber-400"> · 週7回を超えるペース。運動か欲望の調整を</span>
+            )}
+          </p>
+        </section>
+
+        {nextWant && (
+          <section className="mb-4">
+            <div className="bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-3">
+              <p className="text-amber-400 text-sm font-medium">
+                {nextWant.scheduled_date!.slice(5).replace('-', '/')} は
+                {WANT_KIND_EMOJI[nextWant.kind]}
+                {nextWant.label || WANT_KIND_LABELS[nextWant.kind]}！
               </p>
             </div>
-            <div className="text-amber-400 font-bold text-lg">
-              {wantDone}/{wantTotal}
-            </div>
-          </div>
-        )}
-      </header>
-
-      <main className="px-5 space-y-6">
-        {/* プランがない場合 */}
-        {!weekPlan && (
-          <div className="bg-stone-900 rounded-3xl p-6 text-center">
-            <p className="text-4xl mb-3">🍜</p>
-            <p className="text-stone-400 text-sm mb-4">今週のプランがまだありません</p>
-            <button
-              onClick={() => router.push('/plan/new')}
-              className="bg-amber-400 text-stone-950 font-bold px-6 py-3 rounded-2xl text-sm"
-            >
-              今週の欲望を宣言する
-            </button>
-          </div>
-        )}
-
-        {/* メシポバナー（常時表示・bufferがある場合のみ） */}
-        {buffer && (
-          <div className={`rounded-2xl px-4 py-3 border ${
-            isAboveTarget
-              ? 'bg-amber-400/10 border-amber-400/30'
-              : 'bg-rose-950/30 border-rose-800/50'
-          }`}>
-            <p className={`font-bold text-sm ${isAboveTarget ? 'text-amber-400' : 'text-rose-400'}`}>
-              🪙 メシポ {bufferTotal.toLocaleString()}pt
-            </p>
-            <p className={`text-xs mt-1 ${isAboveTarget ? 'text-amber-400/80' : 'text-rose-400/80'}`}>
-              目標ライン {targetBuffer.toLocaleString()}pt{' '}
-              {isAboveTarget
-                ? `▲ +${bufferDiff.toLocaleString()}pt 順調！`
-                : `▼ ${bufferDiff.toLocaleString()}pt 挽回しよう`}
-            </p>
-          </div>
-        )}
-
-        {/* 食事ブロック */}
-        {groupedMeals.length > 0 && (
-          <section>
-            <h2 className="text-stone-500 text-xs font-semibold uppercase tracking-widest mb-3">食事</h2>
-            <div className="space-y-2">
-              {groupedMeals.map(({ type, blocks }) => (
-                <div key={type}>
-                  <p className="text-stone-600 text-xs mb-1 ml-1">{BLOCK_LABELS[type]}</p>
-                  {blocks.map(block => (
-                    <BlockCard
-                      key={block.id}
-                      block={block}
-                      isCompleting={completingBlockId === block.id}
-                      selectedMealKcal={selectedMealKcal}
-                      mealExtraLarge={mealExtraLarge}
-                      onSelectCategory={setSelectedMealKcal}
-                      onToggleExtraLarge={() => setMealExtraLarge(v => !v)}
-                      onDone={() => handleDoneClick(block)}
-                      onConfirmActual={() => confirmMealDone(block)}
-                      onCancelComplete={resetMealComplete}
-                      onSkip={() => markSkipped(block)}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
           </section>
         )}
-
-        {/* 運動ブロック */}
-        {groupedExercise.length > 0 && (
-          <section>
-            <h2 className="text-stone-500 text-xs font-semibold uppercase tracking-widest mb-3">運動</h2>
-            <div className="space-y-2">
-              {groupedExercise.map(({ type, blocks }) => (
-                <div key={type}>
-                  <p className="text-stone-600 text-xs mb-1 ml-1">{BLOCK_LABELS[type]}</p>
-                  {blocks.map(block => (
-                    <BlockCard
-                      key={block.id}
-                      block={block}
-                      isCompleting={false}
-                      onDone={() => handleDoneClick(block)}
-                      onSkip={() => markSkipped(block)}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* 予定外を記録する */}
-        {weekPlan && (
-          <div className="space-y-3">
-            {!unplannedStep && (
-              <button
-                type="button"
-                onClick={openUnplanned}
-                className="w-full border border-stone-700 text-stone-400 rounded-2xl py-3 text-sm"
-              >
-                ＋ 予定外を記録する
-              </button>
-            )}
-
-            {unplannedStep === 'type' && (
-              <div className="bg-stone-900 rounded-2xl px-4 py-3 space-y-3">
-                <p className="text-stone-400 text-xs">何を記録する？</p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setUnplannedStep('meal'); setSelectedMealKcal(null); setMealExtraLarge(false) }}
-                    className="flex-1 bg-stone-800 text-stone-200 text-sm py-2.5 rounded-xl"
-                  >
-                    🍔 予定外に食べた
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setUnplannedStep('exercise'); setSelectedUnplannedExercise(null) }}
-                    className="flex-1 bg-stone-800 text-stone-200 text-sm py-2.5 rounded-xl"
-                  >
-                    🏃 予定外に運動した
-                  </button>
-                </div>
-                <button type="button" onClick={resetUnplanned} className="text-stone-600 text-xs">
-                  キャンセル
-                </button>
-              </div>
-            )}
-
-            {unplannedStep === 'meal' && (
-              <div className="bg-stone-900 rounded-2xl px-4 py-3">
-                <MealCategoryPicker
-                  title="予定外に何を食べた？"
-                  selectedMealKcal={selectedMealKcal}
-                  mealExtraLarge={mealExtraLarge}
-                  selectedActual={selectedMealActual}
-                  onSelectCategory={setSelectedMealKcal}
-                  onToggleExtraLarge={() => setMealExtraLarge(v => !v)}
-                  onConfirm={confirmUnplannedMeal}
-                  onCancel={resetUnplanned}
-                />
-              </div>
-            )}
-
-            {unplannedStep === 'exercise' && (
-              <div className="bg-stone-900 rounded-2xl px-4 py-3 space-y-3">
-                <p className="text-stone-400 text-xs">予定外に何をした？</p>
-                <div className="space-y-2">
-                  {UNPLANNED_EXERCISE_OPTIONS.map((opt, i) => (
-                    <button
-                      key={opt.name}
-                      type="button"
-                      onClick={() => setSelectedUnplannedExercise(i)}
-                      className={`w-full text-left text-xs px-3 py-2.5 rounded-xl border ${
-                        selectedUnplannedExercise === i
-                          ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
-                          : 'bg-stone-800 text-stone-300 border-stone-700'
-                      }`}
-                    >
-                      {opt.name}（+{opt.calories}pt）
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={confirmUnplannedExercise}
-                    disabled={selectedUnplannedExercise === null}
-                    className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
-                  >
-                    確定
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetUnplanned}
-                    className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
-                  >
-                    キャンセル
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* メシポ促しカード */}
-        {weekPlan && (
-          <div className="bg-stone-900 rounded-2xl px-4 py-3">
-            <p className="text-stone-400 text-sm">
-              {buffer && isAboveTarget
-                ? '🎉 今週は順調！このまま行こう'
-                : encourageMsg}
-            </p>
-          </div>
-        )}
-
-        {/* ズレたボタン */}
-        {todayBlocks.length > 0 && (
-          <button
-            onClick={() => router.push('/log/deviation')}
-            className="w-full border border-stone-700 text-stone-400 rounded-2xl py-3 text-sm"
-          >
-            📝 予定と違うことがあった
-          </button>
-        )}
-      </main>
       </div>
 
-      {/* ボトムナビ */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-stone-950 border-t border-stone-800 px-8 py-4 flex justify-around">
-        <NavItem label="今日" emoji="🏠" active onClick={() => {}} />
-        <NavItem label="週プラン" emoji="📅" onClick={() => router.push('/plan')} />
-        <NavItem label="体重" emoji="⚖️" onClick={() => router.push('/weight')} />
-        <NavItem label="設定" emoji="⚙️" onClick={() => router.push('/settings')} />
-      </nav>
-
-      {/* トースト */}
-      {toast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-stone-800 text-stone-100 text-sm font-medium px-5 py-3 rounded-2xl shadow-lg z-50 whitespace-nowrap">
-          {toast}
-        </div>
-      )}
+      <BottomNav active="home" />
     </div>
-  )
-}
-
-function MealCategoryPicker({
-  title,
-  plannedKcal,
-  selectedMealKcal,
-  mealExtraLarge,
-  selectedActual,
-  onSelectCategory,
-  onToggleExtraLarge,
-  onConfirm,
-  onCancel,
-}: {
-  title: string
-  plannedKcal?: number
-  selectedMealKcal: number | null
-  mealExtraLarge: boolean
-  selectedActual: number | null
-  onSelectCategory: (kcal: number) => void
-  onToggleExtraLarge: () => void
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  return (
-    <div className="space-y-3">
-      <p className="text-stone-400 text-xs">
-        {title}{plannedKcal != null ? `（予定: ${plannedKcal}kcal）` : ''}
-      </p>
-      <div className="flex flex-wrap gap-2">
-        {MEAL_CATEGORIES.map(cat => (
-          <button
-            key={cat.label}
-            type="button"
-            onClick={() => onSelectCategory(cat.kcal)}
-            className={`text-xs px-2.5 py-1.5 rounded-xl border ${
-              selectedMealKcal === cat.kcal
-                ? 'bg-amber-400 text-stone-950 border-amber-400 font-bold'
-                : 'bg-stone-800 text-stone-300 border-stone-700'
-            }`}
-          >
-            {cat.label} {cat.kcal}
-          </button>
-        ))}
-      </div>
-      <label className="flex items-center gap-2 text-stone-400 text-xs cursor-pointer">
-        <input
-          type="checkbox"
-          checked={mealExtraLarge}
-          onChange={onToggleExtraLarge}
-          className="rounded border-stone-600"
-        />
-        大盛り (+{LARGE_EXTRA}kcal)
-      </label>
-      {selectedActual != null && (
-        <p className="text-stone-500 text-xs">合計: {selectedActual}kcal</p>
-      )}
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={selectedMealKcal == null}
-          className="flex-1 bg-amber-400 text-stone-950 text-xs font-bold py-2 rounded-xl disabled:opacity-30"
-        >
-          確定
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="flex-1 border border-stone-700 text-stone-400 text-xs py-2 rounded-xl"
-        >
-          キャンセル
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function BlockCard({
-  block,
-  isCompleting,
-  selectedMealKcal,
-  mealExtraLarge,
-  onSelectCategory,
-  onToggleExtraLarge,
-  onDone,
-  onConfirmActual,
-  onCancelComplete,
-  onSkip,
-}: {
-  block: PlanBlock
-  isCompleting?: boolean
-  selectedMealKcal?: number | null
-  mealExtraLarge?: boolean
-  onSelectCategory?: (kcal: number) => void
-  onToggleExtraLarge?: () => void
-  onDone: () => void
-  onConfirmActual?: () => void
-  onCancelComplete?: () => void
-  onSkip: () => void
-}) {
-  const isDone = block.status === 'done'
-  const isSkipped = block.status === 'skipped'
-  const isExercise = EXERCISE_TYPES.includes(block.block_type as BlockType)
-  const selectedActual = selectedMealKcal != null
-    ? selectedMealKcal + (mealExtraLarge ? LARGE_EXTRA : 0)
-    : null
-
-  return (
-    <div className={`bg-stone-900 rounded-2xl px-4 py-3 ${isDone ? 'opacity-50' : ''}`}>
-      <div className="flex items-center gap-3">
-        {block.is_want && (
-          <span className="text-amber-400 text-xs font-bold">★</span>
-        )}
-        <div className="flex-1 min-w-0">
-          <p className={`font-medium text-sm ${isDone ? 'line-through text-stone-500' : 'text-stone-100'}`}>
-            {block.name}
-          </p>
-          <p className="text-stone-600 text-xs mt-0.5">
-            {isExercise
-              ? `消費 ${block.calories}kcal${block.duration_min ? ` · ${block.duration_min}分` : ''}`
-              : `${block.calories}kcal`}
-          </p>
-        </div>
-        {!isDone && !isSkipped && !isCompleting && (
-          <div className="flex gap-2">
-            <button
-              onClick={onSkip}
-              className="text-stone-600 text-xs px-2 py-1 rounded-lg"
-            >
-              スキップ
-            </button>
-            <button
-              onClick={onDone}
-              className="bg-amber-400 text-stone-950 text-xs font-bold px-3 py-1.5 rounded-xl"
-            >
-              完了
-            </button>
-          </div>
-        )}
-        {isDone && <span className="text-emerald-400 text-lg">✓</span>}
-        {isSkipped && <span className="text-stone-600 text-xs">スキップ</span>}
-      </div>
-
-      {!isExercise && isCompleting && (
-        <div className="mt-3 pt-3 border-t border-stone-800">
-          <MealCategoryPicker
-            title="何を食べた？"
-            plannedKcal={block.calories}
-            selectedMealKcal={selectedMealKcal ?? null}
-            mealExtraLarge={mealExtraLarge ?? false}
-            selectedActual={selectedActual}
-            onSelectCategory={onSelectCategory!}
-            onToggleExtraLarge={onToggleExtraLarge!}
-            onConfirm={onConfirmActual!}
-            onCancel={onCancelComplete!}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function NavItem({ label, emoji, active, onClick }: {
-  label: string
-  emoji: string
-  active?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button onClick={onClick} className="flex flex-col items-center gap-1">
-      <span className="text-xl">{emoji}</span>
-      <span className={`text-xs ${active ? 'text-amber-400' : 'text-stone-600'}`}>{label}</span>
-    </button>
   )
 }
