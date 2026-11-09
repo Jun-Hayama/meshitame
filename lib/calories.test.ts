@@ -65,9 +65,22 @@ import {
   getChartRange,
   buildWeightChartData,
   detectNewMilestones,
+  calcMealExampleKcal,
+  buildMealExampleBreakdown,
+  roundUpKcal,
+  orderZeroCalCheats,
+  calcZeroCalStatus,
+  detectNewlyZeroed,
+  describeZeroCalHeadline,
+  buildGaugeMarkers,
+  getGaugeCheatName,
+  calcMonthWeightChange,
+  describeMonthWeightChange,
 } from '@/lib/calories'
-import type { MonthlyWantRow, WantEntry } from '@/types'
+import type { GaugeCheatEntry, MonthlyWantRow, WantEntry } from '@/types'
 import { CHEAT_ITEMS } from '@/lib/cheatItems'
+import { FOOD_ITEM_MAP } from '@/lib/foodItems'
+import { MEAL_EXAMPLES } from '@/lib/mealExamples'
 
 // 2026-11 は30日。2026-11-01 は日曜、2026-11-02 は月曜
 const nov = (d: number) => new Date(2026, 10, d)
@@ -353,12 +366,19 @@ describe('目安くらいの例・がっつりの例（10-2）', () => {
     }
   })
 
-  it('がっつりに目安+300未満のメニューは入らない（境界）', () => {
+  it('がっつりは目安+300を50kcal単位で切り上げた値以上だけ（境界）', () => {
+    // 目安 750 → 750 + 300 = 1050。kcal は辞書から：ご飯250、ご飯（大盛り）400
     const menu = [
-      { name: 'a', kcal: 1382, genre: 'gaishoku' as const, slots: ['dinner' as const] },
-      { name: 'b', kcal: 1383, genre: 'gaishoku' as const, slots: ['dinner' as const] },
+      { name: 'a', genre: 'gaishoku' as const, slots: ['dinner' as const], items: [{ id: 'rice' as const, qty: 4 }] },
+      { name: 'b', genre: 'gaishoku' as const, slots: ['dinner' as const], items: [{ id: 'rice_large' as const, qty: 2 }, { id: 'rice' as const, qty: 1 }] },
     ]
-    expect(pickMealExamples('dinner', 1083, menu).hearty.map((m) => m.name)).toEqual(['b'])
+    // a = 1000、b = 1050
+    const r = pickMealExamples('dinner', 750, menu)
+    expect(r.heartyMinKcal).toBe(1050)
+    expect(r.hearty.map((m) => m.name)).toEqual(['b'])
+    // 目安 749 → 1049 → 表示も絞り込みも 1050
+    expect(pickMealExamples('dinner', 749, menu).heartyMinKcal).toBe(1050)
+    expect(pickMealExamples('dinner', 749, menu).hearty.map((m) => m.name)).toEqual(['b'])
   })
 
   it('その食事のメニューだけを出す', () => {
@@ -366,19 +386,27 @@ describe('目安くらいの例・がっつりの例（10-2）', () => {
     for (const m of [...normal, ...hearty]) expect(m.slots).toContain('morning')
   })
 
+  it('例の kcal は辞書から計算する（表示の kcal = 内訳の合計）', () => {
+    const { normal } = pickMealExamples('lunch', 700)
+    for (const m of normal) {
+      expect(m.kcal).toBe(calcMealExampleKcal(m.items))
+      expect(buildMealExampleBreakdown(m.items).reduce((sum, r) => sum + r.kcal, 0)).toBe(m.kcal)
+    }
+  })
+
   it('ジャンルが混ざる（同じジャンルばかりにならない）', () => {
     const { normal } = pickMealExamples('lunch', 700)
     expect(new Set(normal.map((m) => m.genre)).size).toBeGreaterThanOrEqual(3)
   })
 
-  it('1日の目安1300〜3300kcalのどこでも、両方3〜5個出る', () => {
+  it('1日の目安1300〜3300kcalのどこでも、両方3〜8個出る', () => {
     for (let d = 1300; d <= 3300; d += 25) {
       for (const t of calcMealSlotTargets(d)) {
         const { normal, hearty } = pickMealExamples(t.slot, t.kcal)
         expect(normal.length, `${d} ${t.slot} 目安くらい`).toBeGreaterThanOrEqual(3)
         expect(hearty.length, `${d} ${t.slot} がっつり`).toBeGreaterThanOrEqual(3)
-        expect(normal.length).toBeLessThanOrEqual(5)
-        expect(hearty.length).toBeLessThanOrEqual(5)
+        expect(normal.length).toBeLessThanOrEqual(8)
+        expect(hearty.length).toBeLessThanOrEqual(8)
       }
     }
   })
@@ -1103,5 +1131,205 @@ describe('ゲート達成・3%・5%（11-5）', () => {
 
   it('まだ届いていなければ何も出さない', () => {
     expect(detectNewMilestones(plan, avg(101), new Set())).toEqual([])
+  })
+})
+
+describe('食べものの辞書と例の合計kcal（13.2）', () => {
+  it('辞書の kcal × 数量の合計', () => {
+    expect(calcMealExampleKcal([{ id: 'onigiri_salmon', qty: 1 }, { id: 'cup_noodle', qty: 1 }])).toBe(180 + 350)
+    expect(calcMealExampleKcal([{ id: 'rice', qty: 2 }, { id: 'miso_soup', qty: 1 }])).toBe(540)
+    expect(calcMealExampleKcal([])).toBe(0)
+  })
+
+  it('内訳は「名前 + 数量 + 単位」と、その行のkcal', () => {
+    expect(buildMealExampleBreakdown([{ id: 'onigiri_salmon', qty: 1 }, { id: 'karaage', qty: 2 }])).toEqual([
+      { id: 'onigiri_salmon', label: 'おにぎり（鮭）1個', kcal: 180 },
+      { id: 'karaage', label: '唐揚げ（5個）2皿', kcal: 700 },
+    ])
+  })
+
+  it('例はすべて辞書にある id と1以上の数量でできている', () => {
+    for (const m of MEAL_EXAMPLES) {
+      expect(m.items.length, m.name).toBeGreaterThan(0)
+      for (const i of m.items) {
+        expect(FOOD_ITEM_MAP[i.id], `${m.name} ${i.id}`).toBeDefined()
+        expect(i.qty).toBeGreaterThanOrEqual(1)
+      }
+    }
+  })
+
+  it('チートのアイテム表も辞書の kcal を使う', () => {
+    for (const item of CHEAT_ITEMS) {
+      expect(item.foodId).toBeDefined()
+      expect(item.kcal).toBe(FOOD_ITEM_MAP[item.foodId!].kcal)
+    }
+  })
+
+  it('50kcal単位の切り上げ', () => {
+    expect(roundUpKcal(1049)).toBe(1050)
+    expect(roundUpKcal(1050)).toBe(1050)
+    expect(roundUpKcal(1051)).toBe(1100)
+    expect(roundUpKcal(1001)).toBe(1050)
+  })
+})
+
+describe('ゼロカロ化（13.3）', () => {
+  const wantRow = (over: Partial<MonthlyWantRow>): MonthlyWantRow => ({
+    id: over.label ?? 'x',
+    user_id: 'u',
+    kind: 'other',
+    scheduled_date: null,
+    times_per_week: null,
+    label: null,
+    is_active: true,
+    created_at: '2026-11-01T00:00:00Z',
+    cheat_type: 'addon',
+    replace_slot: null,
+    items: null,
+    total_kcal: null,
+    ...over,
+  })
+  const dated = (label: string, date: string, costPt: number, over: Partial<MonthlyWantRow> = {}): GaugeCheatEntry => ({
+    mode: 'dated',
+    row: wantRow({ label, scheduled_date: date, ...over }),
+    date,
+    costPt,
+    done: false,
+  })
+  const freq = (label: string, costPt: number, created_at: string): GaugeCheatEntry => ({
+    mode: 'frequency',
+    row: wantRow({ label, times_per_week: 1, created_at }),
+    timesPerWeek: 1,
+    timesInMonth: 4,
+    costPerTimePt: costPt / 4,
+    costPt,
+  })
+  const hearty = (date: string, slot: 'morning' | 'lunch' | 'dinner'): GaugeCheatEntry => ({
+    mode: 'hearty',
+    date,
+    slot,
+    costPt: 300,
+  })
+  const names = (es: GaugeCheatEntry[]) => es.map(getGaugeCheatName)
+
+  it('並び順：日付のあるものは日付順（同じ日は朝・昼・夜）、日付のないものは後ろに登録順', () => {
+    const ordered = orderZeroCalCheats([
+      freq('週1ラーメン', 2000, '2026-11-03T00:00:00Z'),
+      dated('ワイン1本', '2026-11-20', 550),
+      freq('週1ケーキ', 1000, '2026-11-01T00:00:00Z'),
+      hearty('2026-11-05', 'dinner'),
+      dated('焼肉', '2026-11-05', 1200, { cheat_type: 'replace', replace_slot: 'lunch' }),
+    ])
+    expect(names(ordered)).toEqual(['焼肉', '🔥がっつり（11/5 夜）', 'ワイン1本', '週1ケーキ', '週1ラーメン'])
+  })
+
+  it('累計コストが貯まったpt以下のものが0kcal化済み（ちょうど同じ値も済み）', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 550), dated('ハイボール1杯', '2026-11-04', 80), dated('ケーキ', '2026-11-10', 350)]
+    const s = calcZeroCalStatus(cheats, 630)
+    expect(s.entries.map((e) => e.zeroed)).toEqual([true, true, false])
+    expect(s.entries.map((e) => e.cumulativePt)).toEqual([550, 630, 980])
+    expect(s.zeroedPt).toBe(630)
+    expect(s.totalPt).toBe(980)
+    expect(s.next && getGaugeCheatName(s.next.entry)).toBe('ケーキ')
+    expect(s.next?.remainingPt).toBe(350)
+    expect(s.next?.tamemeshiNeeded).toBe(3) // 350 ÷ 150 を切り上げ
+    expect(s.extraPt).toBe(0)
+
+    const s2 = calcZeroCalStatus(cheats, 629)
+    expect(s2.entries.map((e) => e.zeroed)).toEqual([true, false, false])
+    expect(s2.next?.remainingPt).toBe(1)
+    expect(s2.next?.tamemeshiNeeded).toBe(1)
+  })
+
+  it('チート0件', () => {
+    const s = calcZeroCalStatus([], 300)
+    expect(s.entries).toEqual([])
+    expect(s.next).toBeNull()
+    expect(s.zeroedPt).toBe(0)
+    expect(s.totalPt).toBe(0)
+    expect(describeZeroCalHeadline(s)).toBe('食べたいものを先に決めよう')
+    expect(buildGaugeMarkers(s)).toEqual([])
+  })
+
+  it('全部済み：あと◯kcal分を追加できる。マイナスは出さない', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 550)]
+    const s = calcZeroCalStatus(cheats, 700)
+    expect(s.next).toBeNull()
+    expect(s.zeroedPt).toBe(550)
+    expect(s.extraPt).toBe(150)
+    const s0 = calcZeroCalStatus(cheats, 0)
+    expect(s0.zeroedPt).toBe(0)
+    expect(s0.next?.tamemeshiNeeded).toBe(4) // 550 ÷ 150 = 3.67 → 4
+    expect(calcZeroCalStatus(cheats, -100).zeroedPt).toBe(0)
+  })
+
+  it('見出し：0kcal化済みだけを「・」でつなぐ。4件以上は「ほか◯件」', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 550), dated('ハイボール1杯', '2026-11-04', 80), dated('ケーキ', '2026-11-10', 350)]
+    expect(describeZeroCalHeadline(calcZeroCalStatus(cheats, 630))).toBe('ワイン1本・ハイボール1杯、実質0kcalで ごちそうさまでした')
+    expect(describeZeroCalHeadline(calcZeroCalStatus(cheats, 100))).toBe('最初のチートまで、あとメシため3回')
+    const many = [...cheats, dated('大福', '2026-11-11', 240), dated('パフェ', '2026-11-12', 600)]
+    expect(describeZeroCalHeadline(calcZeroCalStatus(many, 5000))).toBe(
+      'ワイン1本・ハイボール1杯・ケーキほか2件、実質0kcalで ごちそうさまでした'
+    )
+  })
+
+  it('新たに0kcal化済みになったチート（記録の前後のpt）。複数なら最後の1件', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 550), dated('ハイボール1杯', '2026-11-04', 80), dated('ケーキ', '2026-11-10', 350)]
+    expect(detectNewlyZeroed(cheats, 450, 600)).toBe(cheats[0])
+    expect(detectNewlyZeroed(cheats, 450, 630)).toBe(cheats[1]) // 2件なったら最後の1件
+    expect(detectNewlyZeroed(cheats, 600, 620)).toBeNull() // 増えたけど次に届かない
+    expect(detectNewlyZeroed(cheats, 630, 630)).toBeNull()
+    expect(detectNewlyZeroed(cheats, 700, 550)).toBeNull() // 減ったとき
+    expect(detectNewlyZeroed([], 0, 300)).toBeNull()
+  })
+
+  it('ゲージのアイコン：累計の位置。近いものは1つにまとめる', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 550), dated('ハイボール1杯', '2026-11-04', 50), dated('ケーキ', '2026-11-10', 400)]
+    const markers = buildGaugeMarkers(calcZeroCalStatus(cheats, 600))
+    expect(markers).toHaveLength(2)
+    expect(markers[0]).toMatchObject({ ratio: 0.6, count: 2, zeroed: true })
+    expect(markers[1]).toMatchObject({ ratio: 1, count: 1, zeroed: false })
+    expect(markers.map((m) => m.emoji)).toEqual(['★', '★'])
+    expect(buildGaugeMarkers(calcZeroCalStatus([hearty('2026-11-05', 'dinner')], 0))[0].emoji).toBe('🔥')
+  })
+})
+
+describe('月初めからの体重の変化（13.4）', () => {
+  const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+  // 基準：11/2〜11/8 の記録の平均。いま：今日までの7日間
+  const base = [w('2026-11-02', 103.0), w('2026-11-03', 102.8), w('2026-11-05', 102.6)] // 平均 102.8
+
+  it('記録が足りないとき・期間が重なるときは null', () => {
+    expect(calcMonthWeightChange([], '2026-11-20')).toBeNull()
+    // いまの期間の記録が2件
+    expect(calcMonthWeightChange([...base, w('2026-11-18', 102.0), w('2026-11-20', 102.0)], '2026-11-20')).toBeNull()
+    // 基準の期間の記録が2件
+    expect(
+      calcMonthWeightChange([...base.slice(0, 2), w('2026-11-15', 102), w('2026-11-17', 102), w('2026-11-20', 102)], '2026-11-20')
+    ).toBeNull()
+    // 月の初め：いまの期間（11/4〜11/10）が基準（11/2〜11/8）と重なる
+    expect(calcMonthWeightChange([...base, w('2026-11-09', 102), w('2026-11-10', 102), w('2026-11-07', 102)], '2026-11-10')).toBeNull()
+    // 前の月の記録は基準に使わない
+    expect(calcMonthWeightChange([w('2026-10-30', 104), w('2026-10-31', 104), w('2026-11-01', 104)], '2026-11-20')).toBeNull()
+  })
+
+  it('減・増・変わらず（0.1kg未満）', () => {
+    const now = (kg: number) => [w('2026-11-16', kg), w('2026-11-18', kg), w('2026-11-20', kg)]
+    const down = calcMonthWeightChange([...base, ...now(102.4)], '2026-11-20')
+    expect(down).toBeCloseTo(-0.4)
+    expect(describeMonthWeightChange(down!)).toBe('これだけ食べて、月初めから0.4kg減')
+    const up = calcMonthWeightChange([...base, ...now(103.0)], '2026-11-20')
+    expect(describeMonthWeightChange(up!)).toBe('これだけ食べて、月初めから0.2kg増')
+    const same = calcMonthWeightChange([...base, ...now(102.85)], '2026-11-20')
+    expect(describeMonthWeightChange(same!)).toBe('これだけ食べて、月初めから変わらず')
+    expect(describeMonthWeightChange(-0.099)).toBe('これだけ食べて、月初めから変わらず')
+    expect(describeMonthWeightChange(-0.1)).toBe('これだけ食べて、月初めから0.1kg減')
+  })
+
+  it('基準とつながる最初の日：基準の終わりの次の日から「いま」を出せる', () => {
+    // 基準 11/2〜11/8、いま 11/9〜11/15（today = 11/15）
+    const logs = [...base, w('2026-11-09', 102.5), w('2026-11-12', 102.5), w('2026-11-15', 102.5)]
+    expect(calcMonthWeightChange(logs, '2026-11-15')).toBeCloseTo(-0.3)
+    expect(calcMonthWeightChange(logs, '2026-11-14')).toBeNull()
   })
 })

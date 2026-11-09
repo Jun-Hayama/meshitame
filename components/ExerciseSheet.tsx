@@ -2,7 +2,14 @@
 
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { EXERCISE_TYPE_EMOJI, EXERCISE_TYPE_LABELS, type ExerciseLogRow, type ExerciseType } from '@/types'
+import {
+  EXERCISE_EMOJI,
+  EXERCISE_LABEL,
+  EXERCISE_TYPE_EMOJI,
+  EXERCISE_TYPE_LABELS,
+  type ExerciseLogRow,
+  type ExerciseType,
+} from '@/types'
 import { calcExercisePoints } from '@/lib/calories'
 
 const TYPES: ExerciseType[] = ['walking', 'running', 'weights', 'cycling', 'sports', 'steps']
@@ -63,7 +70,7 @@ export function ExerciseSheet({
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60" onClick={onClose}>
       <div className="w-full max-w-md bg-stone-900 rounded-t-3xl px-5 pt-5 pb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h3 className="font-bold">運動を追加</h3>
+          <h3 className="font-bold">{EXERCISE_EMOJI} {EXERCISE_LABEL}を追加</h3>
           <button type="button" onClick={onClose} className="text-stone-500 text-sm">
             閉じる
           </button>

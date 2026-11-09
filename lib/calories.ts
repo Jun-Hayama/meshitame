@@ -34,7 +34,11 @@ import {
   EarnedBreakdown,
   WeekSummary,
   DatedCheatEntry,
+  ZeroCalEntry,
+  ZeroCalStatus,
+  GaugeMarker,
 } from '@/types'
+import { WANT_KIND_EMOJI, WANT_KIND_LABELS, MEAL_CHOICE_EMOJI, MEAL_CHOICE_LABELS } from '@/types'
 import {
   KCAL_PER_KG,
   BMI_STANDARD,
@@ -61,9 +65,18 @@ import {
   CHART_PERIOD_DAYS,
   CHART_Y_PADDING_KG,
   HEALTH_MILESTONES,
+  ZERO_CAL_HEADLINE_MAX,
+  GAUGE_MARKER_MIN_GAP,
 } from '@/lib/calorieConstants'
 import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
-import { MEAL_EXAMPLES, MEAL_EXAMPLE_RANGE, MEAL_EXAMPLES_MAX, type MealExample } from '@/lib/mealExamples'
+import {
+  MEAL_EXAMPLES,
+  MEAL_EXAMPLE_RANGE,
+  MEAL_EXAMPLES_MAX,
+  type MealExample,
+  type MealExampleItem,
+} from '@/lib/mealExamples'
+import { FOOD_ITEM_MAP } from '@/lib/foodItems'
 
 // 基礎代謝計算（ハリス・ベネディクト式）
 export function calcBaseMetabolism(
@@ -521,18 +534,43 @@ export function calcMealSlotTargets(dailyIntakeKcal: number): MealSlotTarget[] {
   })
 }
 
-// --- 10-2. 目安くらいの例・がっつりの例 ---
+// --- 10-2・13.2. 目安くらいの例・がっつりの例 ---
 
-export interface MealExamples {
-  normal: MealExample[] // 目安 ±15%
-  hearty: MealExample[] // 目安 + 300 以上
-  heartyMinKcal: number
+// 例の合計kcal = 辞書のkcal × 数量の合計
+export function calcMealExampleKcal(items: MealExampleItem[]): number {
+  return items.reduce((sum, i) => sum + FOOD_ITEM_MAP[i.id].kcal * i.qty, 0)
 }
 
-// 近い順に並べ、同じジャンルは先に2件までにして和・洋・外食・コンビニを混ぜる。表示は近い順
-function pickMixed(candidates: MealExample[], distance: (m: MealExample) => number): MealExample[] {
+// 例の内訳（「おにぎり（鮭）1個 180kcal」の行）
+export function buildMealExampleBreakdown(
+  items: MealExampleItem[]
+): { id: string; label: string; kcal: number }[] {
+  return items.map((i) => {
+    const food = FOOD_ITEM_MAP[i.id]
+    return { id: i.id, label: `${food.name}${i.qty}${food.unit}`, kcal: food.kcal * i.qty }
+  })
+}
+
+// kcal を step 単位で切り上げ（1049 → 1050、1050 → 1050）
+export function roundUpKcal(kcal: number, step = 50): number {
+  return Math.ceil(kcal / step) * step
+}
+
+export type PickedMealExample = MealExample & { kcal: number }
+
+export interface MealExamples {
+  normal: PickedMealExample[] // 目安 ±15%
+  hearty: PickedMealExample[] // 目安 + 300 を50kcal単位で切り上げた値以上
+  heartyMinKcal: number // 表示するしきい値（50kcal単位）
+}
+
+// 近い順に並べ、同じジャンルは先に2件までにして和・洋・中・外食・コンビニを混ぜる。表示は近い順
+function pickMixed(
+  candidates: PickedMealExample[],
+  distance: (m: PickedMealExample) => number
+): PickedMealExample[] {
   const sorted = [...candidates].sort((a, b) => distance(a) - distance(b))
-  const picked: MealExample[] = []
+  const picked: PickedMealExample[] = []
   const perGenre = new Map<string, number>()
   for (const m of sorted) {
     if (picked.length >= MEAL_EXAMPLES_MAX) break
@@ -553,9 +591,12 @@ export function pickMealExamples(
   targetKcal: number,
   menu: MealExample[] = MEAL_EXAMPLES
 ): MealExamples {
-  const forSlot = menu.filter((m) => m.slots.includes(slot))
+  const forSlot = menu
+    .filter((m) => m.slots.includes(slot))
+    .map((m) => ({ ...m, kcal: calcMealExampleKcal(m.items) }))
   const range = targetKcal * MEAL_EXAMPLE_RANGE
-  const heartyMin = targetKcal + MEAL_RECORD_DELTA.hearty
+  // 表示と同じ値で絞る（「1050kcal〜」に1049kcalの例が入らないように）
+  const heartyMin = roundUpKcal(targetKcal + MEAL_RECORD_DELTA.hearty)
 
   return {
     normal: pickMixed(
@@ -600,7 +641,7 @@ export function buildCheatLabel(items: Pick<CheatItemSelection, 'name' | 'qty'>[
   return items.map((i) => (i.qty > 1 ? `${i.name}×${i.qty}` : i.name)).join('＋')
 }
 
-// 「このチートは ◯pt ＝ ためメシ◯回 or ウォーキング◯分」
+// 「このチートは ◯pt ＝ メシため◯回 or ウォーキング◯分」
 export function convertCheatCost(costPt: number): { tamemeshi: number; walkingMinutes: number } {
   const pt = Math.max(0, costPt)
   return {
@@ -826,6 +867,7 @@ export function getReviewWeek(today: string): { from: string; to: string } | nul
 
 export function calcWeekSummary(input: {
   from: string // 月曜
+  until?: string // 集計の最後の日（今週の途中なら今日）。省略時は日曜まで
   mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
   exerciseLogs: { log_date: string; points: number }[]
   wants: MonthlyWantRow[]
@@ -833,7 +875,8 @@ export function calcWeekSummary(input: {
   weightLogs: WeightPoint[]
 }): WeekSummary {
   const { from, mealLogs, exerciseLogs, wants, slotTargets, weightLogs } = input
-  const to = addDaysToDateStr(from, 6)
+  const sunday = addDaysToDateStr(from, 6)
+  const to = input.until && input.until < sunday ? input.until : sunday
   const active = wants.filter((r) => r.is_active !== false)
   const replacedMealKeys = getReplacedMealKeys(active)
 
@@ -859,21 +902,136 @@ export function calcWeekSummary(input: {
 
   return {
     from,
-    to,
+    to: sunday,
     earned: calcEarnedBreakdown({ from, to, mealLogs, exerciseLogs, replacedMealKeys }),
     cheats,
     frequencyCheats,
     cheatPt: cheats.reduce((sum, e) => sum + e.costPt, 0) + frequencyCheats.reduce((sum, e) => sum + e.costPt, 0),
-    weightDiffKg: calcWeekOverWeek(weightLogs, to).diffKg,
+    weightDiffKg: calcWeekOverWeek(weightLogs, sunday).diffKg,
   }
 }
 
 // 「今週は+600pt！ワイン1本ぶん貯まりました🍷」。0ptのときも責めない
 export function describeWeekEarned(pt: number): string {
-  if (pt <= 0) return '今週はひと休み。来週のためメシでまた貯めていこう'
+  if (pt <= 0) return '今週はひと休み。来週のメシためでまた貯めていこう'
   const eq = [...WEEK_EARNED_EQUIVALENTS].reverse().find((e) => e.pt <= pt)
   if (!eq) return `今週は+${pt}pt！コツコツ貯まっています`
   return `今週は+${pt}pt！${eq.label}ぶん貯まりました${eq.emoji}`
+}
+
+// --- 13.3. ゼロカロ化（pt ≒ kcal。貯まったpt = 実質0kcalにできたkcal） ---
+
+const shortDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
+
+// 「🔥がっつり（11/9 夜）」
+export function heartyCheatLabel(date: string, slot: MealSlot): string {
+  return `${MEAL_CHOICE_EMOJI.hearty}${MEAL_CHOICE_LABELS.hearty}（${shortDate(date)} ${SLOT_LABELS[slot]}）`
+}
+
+// 見出し・トーストに出すチートの名前
+export function getGaugeCheatName(entry: GaugeCheatEntry): string {
+  if (entry.mode === 'hearty') return heartyCheatLabel(entry.date, entry.slot)
+  return entry.row.label || WANT_KIND_LABELS[entry.row.kind]
+}
+
+// ゲージに乗せる絵文字：アイテム表のジャンルの絵文字（がっつりは🔥、中身なしは kind の絵文字）
+export function getGaugeCheatEmoji(entry: GaugeCheatEntry): string {
+  if (entry.mode === 'hearty') return MEAL_CHOICE_EMOJI.hearty
+  const genre = entry.row.items?.[0]?.genre
+  return (genre && genreDef(genre)?.emoji) || WANT_KIND_EMOJI[entry.row.kind]
+}
+
+// 0kcal化の並び順：日付のあるもの（日付指定・がっつり）は日付の早い順（同じ日は朝・昼・夜、さらに登録順）、
+// 日付のないもの（頻度ベース）はその後ろに登録順
+export function orderZeroCalCheats(entries: GaugeCheatEntry[]): GaugeCheatEntry[] {
+  const slotIndex = (e: GaugeCheatEntry) =>
+    SLOT_ORDER.indexOf(e.mode === 'hearty' ? e.slot : (e.row.replace_slot ?? 'dinner'))
+  const createdAt = (e: GaugeCheatEntry) => (e.mode === 'hearty' ? '' : e.row.created_at ?? '')
+  const dated = entries
+    .map((e, index) => ({ e, index }))
+    .filter(({ e }) => e.mode !== 'frequency')
+    .sort((a, b) => {
+      const da = (a.e as Exclude<GaugeCheatEntry, { mode: 'frequency' }>).date
+      const db = (b.e as Exclude<GaugeCheatEntry, { mode: 'frequency' }>).date
+      return (
+        da.localeCompare(db) ||
+        slotIndex(a.e) - slotIndex(b.e) ||
+        createdAt(a.e).localeCompare(createdAt(b.e)) ||
+        a.index - b.index
+      )
+    })
+    .map(({ e }) => e)
+  const undated = entries
+    .map((e, index) => ({ e, index }))
+    .filter(({ e }) => e.mode === 'frequency')
+    .sort((a, b) => createdAt(a.e).localeCompare(createdAt(b.e)) || a.index - b.index)
+    .map(({ e }) => e)
+  return [...dated, ...undated]
+}
+
+// 並べたチートを累計し、累計コスト ≦ 貯まったpt のものを0kcal化済みにする
+export function calcZeroCalStatus(ordered: GaugeCheatEntry[], earnedPt: number): ZeroCalStatus {
+  const earned = Math.max(0, earnedPt)
+  let cumulative = 0
+  const entries: ZeroCalEntry[] = ordered.map((entry) => {
+    cumulative += entry.costPt
+    return { entry, cumulativePt: cumulative, zeroed: cumulative <= earned }
+  })
+  const totalPt = cumulative
+  const nextEntry = entries.find((e) => !e.zeroed) ?? null
+  const remainingPt = nextEntry ? nextEntry.cumulativePt - earned : 0
+  return {
+    entries,
+    totalPt,
+    earnedPt: earned,
+    zeroedPt: Math.min(earned, totalPt),
+    zeroedCount: entries.filter((e) => e.zeroed).length,
+    next: nextEntry
+      ? { entry: nextEntry.entry, remainingPt, tamemeshiNeeded: Math.ceil(remainingPt / TAMEMESHI_PT) }
+      : null,
+    extraPt: nextEntry ? 0 : earned - totalPt,
+  }
+}
+
+// 記録の前後の貯まったptを比べて、新たに0kcal化済みになったチート（複数なら最後の1件）。無ければ null
+export function detectNewlyZeroed(
+  ordered: GaugeCheatEntry[],
+  beforePt: number,
+  afterPt: number
+): GaugeCheatEntry | null {
+  const before = new Set(calcZeroCalStatus(ordered, beforePt).entries.filter((e) => e.zeroed).map((e) => e.entry))
+  const added = calcZeroCalStatus(ordered, afterPt).entries.filter((e) => e.zeroed && !before.has(e.entry))
+  return added.length > 0 ? added[added.length - 1].entry : null
+}
+
+// 見出し（13.3）
+export function describeZeroCalHeadline(status: ZeroCalStatus): string {
+  if (status.entries.length === 0) return '食べたいものを先に決めよう'
+  const zeroed = status.entries.filter((e) => e.zeroed).map((e) => getGaugeCheatName(e.entry))
+  if (zeroed.length === 0) return `最初のチートまで、あと${MEAL_CHOICE_LABELS.light}${status.next?.tamemeshiNeeded ?? 0}回`
+  const names =
+    zeroed.length > ZERO_CAL_HEADLINE_MAX
+      ? `${zeroed.slice(0, ZERO_CAL_HEADLINE_MAX).join('・')}ほか${zeroed.length - ZERO_CAL_HEADLINE_MAX}件`
+      : zeroed.join('・')
+  return `${names}、実質0kcalで ごちそうさまでした`
+}
+
+// ゲージのアイコン。位置 = 累計コスト ÷ 合計。前のアイコンとの間が minGap 未満なら1つにまとめる（絵文字は最初の1件）
+export function buildGaugeMarkers(status: ZeroCalStatus, minGap = GAUGE_MARKER_MIN_GAP): GaugeMarker[] {
+  if (status.totalPt <= 0) return []
+  const markers: GaugeMarker[] = []
+  for (const e of status.entries) {
+    const ratio = e.cumulativePt / status.totalPt
+    const last = markers[markers.length - 1]
+    if (last && ratio - last.ratio < minGap) {
+      last.ratio = ratio
+      last.count += 1
+      last.zeroed = last.zeroed && e.zeroed
+      continue
+    }
+    markers.push({ ratio, emoji: getGaugeCheatEmoji(e.entry), count: 1, zeroed: e.zeroed })
+  }
+  return markers
 }
 
 // --- 10-5. 運動の記録 ---
@@ -959,6 +1117,36 @@ export function formatWeightChange(diffKg: number): string {
 }
 
 // --- 11-4. 進捗チャート ---
+
+// --- 13.4. 月初めからの体重の変化 ---
+// 基準 = その月で最初に体重を記録した日から7日間の記録の平均（3件以上）
+// いま = 今日までの直近7日間の記録の平均（3件以上）。基準の期間と重ならないこと
+// 条件が揃わないときは null
+export function calcMonthWeightChange(logs: WeightPoint[], today: string): number | null {
+  const prefix = today.slice(0, 7)
+  const inMonth = logs
+    .filter((l) => l.measured_at.startsWith(prefix) && l.measured_at <= today)
+    .sort((a, b) => a.measured_at.localeCompare(b.measured_at))
+  if (inMonth.length === 0) return null
+  const baseFrom = inMonth[0].measured_at
+  const baseTo = addDaysToDateStr(baseFrom, WEIGHT_AVG_DAYS - 1)
+  const nowFrom = addDaysToDateStr(today, -(WEIGHT_AVG_DAYS - 1))
+  if (nowFrom <= baseTo) return null
+  const avg = (from: string, to: string) => {
+    const xs = inMonth.filter((l) => l.measured_at >= from && l.measured_at <= to)
+    return xs.length < WEIGHT_AVG_MIN_COUNT ? null : xs.reduce((sum, l) => sum + Number(l.weight_kg), 0) / xs.length
+  }
+  const base = avg(baseFrom, baseTo)
+  const now = avg(nowFrom, today)
+  if (base === null || now === null) return null
+  return Math.round((now - base) * 1000) / 1000
+}
+
+// 「これだけ食べて、月初めから0.4kg減」／「変わらず」（0.1kg未満）／「0.2kg増」
+export function describeMonthWeightChange(diffKg: number): string {
+  const change = Math.abs(diffKg) < 0.1 ? '変わらず' : formatWeightChange(diffKg)
+  return `これだけ食べて、月初めから${change}`
+}
 
 // a から b まで何日か（b − a）
 export function daysBetween(a: string, b: string): number {

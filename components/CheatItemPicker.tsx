@@ -10,6 +10,7 @@ import type {
   MealSlot,
   MonthlyWantRow,
 } from '@/types'
+import { MEAL_CHOICE_EMOJI, MEAL_CHOICE_LABELS } from '@/types'
 import {
   buildCheatLabel,
   calcDailyIntakeFromPace,
@@ -380,7 +381,7 @@ export function CheatItemPicker({
         {selections.length > 0 && (
           <div className="bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-3 mb-4">
             <p className="text-amber-400 text-sm font-medium">
-              このチートは {costPt}pt ＝ 🐷ためメシ{conversion.tamemeshi}回 or ウォーキング{conversion.walkingMinutes}分
+              このチートは {costPt}pt ＝ {MEAL_CHOICE_EMOJI.light}{MEAL_CHOICE_LABELS.light}{conversion.tamemeshi}回 or ウォーキング{conversion.walkingMinutes}分
             </p>
             <p className="text-stone-500 text-[11px] mt-1">
               合計 {totalKcal}kcal

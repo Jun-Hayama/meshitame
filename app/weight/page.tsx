@@ -95,10 +95,10 @@ export default function WeightPage() {
           <p className="text-stone-500 text-sm">読み込み中...</p>
         ) : (
           <main className="space-y-6">
-            {/* 7日平均（11-2）：メインは7日平均、当日の数字は小さく */}
+            {/* このところ（11-2・13.4）：計算は7日平均のまま。「7日平均」という言葉は出さない */}
             <section className="bg-stone-900 rounded-3xl p-6 text-center">
               <p className="text-stone-500 text-xs mb-1">
-                7日間の平均{average.isReference && average.avgKg !== null && <span className="ml-1">（参考値）</span>}
+                このところ{average.isReference && average.avgKg !== null && <span className="ml-1">（参考値）</span>}
               </p>
               {average.avgKg === null ? (
                 <p className="text-stone-500 text-sm py-3">この7日間の記録がまだありません</p>
@@ -106,7 +106,7 @@ export default function WeightPage() {
                 <>
                   <p className={`text-5xl font-bold ${average.isReference ? 'text-stone-400' : 'text-amber-400'}`}>
                     {average.avgKg.toFixed(1)}
-                    <span className="text-xl text-stone-500 ml-1">kg</span>
+                    <span className="text-xl text-stone-500 ml-1">kg前後</span>
                   </p>
                   <p className="text-stone-500 text-xs mt-2">
                     {todayLog ? `今朝 ${todayLog.weight_kg}kg` : '今朝はまだ'} ・ 7日間で{average.count}回
@@ -118,7 +118,7 @@ export default function WeightPage() {
                         {formatWeightChange(weekOverWeek.diffKg)}
                       </span>
                       {weekOverWeek.diffKg > 0.05 && (
-                        <span className="block text-stone-500 text-xs mt-1">水分などで動く範囲です。7日平均で見ていこう</span>
+                        <span className="block text-stone-500 text-xs mt-1">日々のぶれは気にせず、流れで見ていこう</span>
                       )}
                       {weekOverWeek.isReference && (
                         <span className="block text-stone-600 text-xs mt-1">記録が少ないので参考値です</span>
@@ -162,7 +162,7 @@ export default function WeightPage() {
                 )}
                 <WeightChart data={chart} today={today} />
                 <div className="flex gap-4 text-[11px] text-stone-500 mt-1 px-1">
-                  <span><span className="inline-block w-3 h-0.5 bg-amber-400 align-middle mr-1" />7日平均</span>
+                  <span><span className="inline-block w-3 h-0.5 bg-amber-400 align-middle mr-1" />ならした線</span>
                   <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-stone-300/50 align-middle mr-1" />毎日</span>
                   <span><span className="inline-block w-3 border-t border-dashed border-stone-300/60 align-middle mr-1" />目標ライン</span>
                 </div>

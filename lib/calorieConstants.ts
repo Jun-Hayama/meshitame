@@ -37,7 +37,7 @@ export const DEFAULT_REDUCE_PACE: ReducePace = 'slow'
 
 // 毎日の記録（1食あたりの差分。10-2のがっつりの例の基準にも使う）
 export const MEAL_RECORD_DELTA = {
-  light: -150, // ためメシ
+  light: -150, // メシため（DBの値は light）
   normal: 0, // いつもの
   hearty: 300, // がっつり
 } as const
@@ -106,3 +106,8 @@ export const WEEK_EARNED_EQUIVALENTS = [
   { pt: 1200, label: '焼肉', emoji: '🥩' },
   { pt: 1800, label: '飲み会1回', emoji: '🍻' },
 ] as const
+
+// ゼロカロ化（13.3）：見出しに並べるチートの最大件数（それ以上は「ほか◯件」）
+export const ZERO_CAL_HEADLINE_MAX = 3
+// ゲージのアイコン：前のアイコンとの間がこれ未満（ゲージの長さに対する割合）なら1つにまとめる
+export const GAUGE_MARKER_MIN_GAP = 0.08

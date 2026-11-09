@@ -100,9 +100,9 @@ export interface CustomCheatItemRow {
 export type MealSlot = 'morning' | 'lunch' | 'dinner'
 export type MealChoice = 'light' | 'normal' | 'hearty'
 
-// 記録の3択の表示名（12-1）。DBの値（light / normal / hearty）は変えない
+// 記録の3択の表示名（12-1・13.1）。DBの値（light / normal / hearty）は変えない
 export const MEAL_CHOICE_LABELS: Record<MealChoice, string> = {
-  light: 'ためメシ',
+  light: 'メシため',
   normal: 'いつもの',
   hearty: 'がっつり',
 }
@@ -202,6 +202,10 @@ export const EXERCISE_TYPE_EMOJI: Record<ExerciseType, string> = {
   steps: '👟',
 }
 
+// 運動の表示名（13.1）。テーブル名・型名（exercise）は変えない
+export const EXERCISE_LABEL = 'うごため'
+export const EXERCISE_EMOJI = '🏃'
+
 // exercise_logs テーブルの1行
 export interface ExerciseLogRow {
   id: string
@@ -241,8 +245,8 @@ export type GaugeCheatEntry = MonthCheatEntry | HeartyCheatEntry
 
 // 貯まったptの内訳（12-2・12-4）
 export interface EarnedBreakdown {
-  tamemeshiCount: number // ためメシの回数
-  tamemeshiPt: number // ためメシ × 150
+  tamemeshiCount: number // メシため（light）の回数
+  tamemeshiPt: number // メシため × 150
   exercisePt: number
   totalPt: number
 }
@@ -269,6 +273,33 @@ export interface MeshipoGauge {
   tamemeshiNeeded: number // 今月あと必要なためメシ = 切り上げ((目標 − 貯まった) ÷ 150)。0なら目標達成
   fillRatio: number // ゲージの塗り（0〜1）
   paceRatio: number // ペースの目印の位置（0〜1）
+}
+
+// ===== v2.3 ゼロカロ化（13.3） =====
+
+// チートを並び順に累計したときの1件
+export interface ZeroCalEntry {
+  entry: GaugeCheatEntry
+  cumulativePt: number // この件までのコストの累計
+  zeroed: boolean // 累計 ≦ 貯まったpt（実質0kcal化済み）
+}
+
+export interface ZeroCalStatus {
+  entries: ZeroCalEntry[] // 並び順（日付のあるもの → 日付のないもの）
+  totalPt: number // チートのコスト合計
+  earnedPt: number // 貯まったpt（= ゼロカロ化できたkcal）
+  zeroedPt: number // ゼロカロ化の表示に使う値 = min(貯まった, 合計)
+  zeroedCount: number
+  next: { entry: GaugeCheatEntry; remainingPt: number; tamemeshiNeeded: number } | null // 次に0kcalになるチート
+  extraPt: number // 全部済みのとき、あと追加できる分
+}
+
+// ゲージに乗せるチートのアイコン（近いものは1つにまとめる）
+export interface GaugeMarker {
+  ratio: number // 0〜1（累計コストの位置）
+  emoji: string
+  count: number // まとめた件数（2以上で「×2」）
+  zeroed: boolean // まとめた全部が0kcal化済み
 }
 
 // ===== フェーズ2 体重・7日平均 =====

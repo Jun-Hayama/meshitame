@@ -1,6 +1,7 @@
-// チートアイテム表（docs/v2-spec.md 10-6）
+// チートアイテム表（docs/v2-spec.md 10-6・13.2）
 // kcalはすべてざっくりの目安。商品名・店名は使わない。調整するときはこのファイルだけを変更する
 import type { CheatType, WantKind } from '@/types'
+import { FOOD_ITEM_MAP, type FoodId } from '@/lib/foodItems'
 
 export type CheatGenre =
   | 'ramen'
@@ -57,54 +58,76 @@ export interface CheatItem {
   kcal: number
   topping?: boolean // 「+250」のような追加トッピング（表示用）
   custom?: boolean // ユーザーが自由入力したもの
+  foodId?: FoodId // 辞書（lib/foodItems.ts）の id。自由入力のものは無し
 }
 
-const t = (genre: CheatGenre, rows: [string, number, boolean?][]): CheatItem[] =>
-  rows.map(([name, kcal, topping]) => ({ genre, name, kcal, ...(topping ? { topping } : {}) }))
+// 各ジャンルのアイテムは辞書（lib/foodItems.ts）の id で指定する。kcal は辞書の値を使う
+// 表示名はチートの画面での名前（保存する中身の name。履歴の並べ替えにも使うので変えない）
+const t = (genre: CheatGenre, rows: [FoodId, string, boolean?][]): CheatItem[] =>
+  rows.map(([id, name, topping]) => ({
+    genre,
+    name,
+    kcal: FOOD_ITEM_MAP[id].kcal,
+    foodId: id,
+    ...(topping ? { topping } : {}),
+  }))
 
 export const CHEAT_ITEMS: CheatItem[] = [
   ...t('ramen', [
-    ['醤油・塩', 500], ['味噌', 650], ['豚骨', 750], ['家系', 950], ['二郎系', 1500], ['つけ麺', 800],
-    ['大盛り', 250, true], ['替え玉', 250, true], ['ライス', 250, true], ['餃子5個', 250, true],
-    ['半チャーハン', 400, true],
+    ['ramen_shoyu', '醤油・塩'], ['ramen_miso', '味噌'], ['ramen_tonkotsu', '豚骨'], ['ramen_iekei', '家系'],
+    ['ramen_jiro', '二郎系'], ['tsukemen', 'つけ麺'],
+    ['ramen_large_extra', '大盛り', true], ['kaedama', '替え玉', true], ['rice', 'ライス', true],
+    ['gyoza', '餃子5個', true], ['han_chahan', '半チャーハン', true],
   ]),
-  ...t('party', [['軽め（2〜3杯）', 1200], ['ふつう（4〜5杯）', 1800], ['がっつり（6杯以上＋締め）', 2500]]),
+  ...t('party', [
+    ['party_light', '軽め（2〜3杯）'], ['party_normal', 'ふつう（4〜5杯）'], ['party_heavy', 'がっつり（6杯以上＋締め）'],
+  ]),
   ...t('alcohol', [
-    ['ビール350ml', 140], ['ビール500ml', 200], ['ハイボール1杯', 80], ['レモンサワー350ml', 180],
-    ['日本酒1合', 190], ['焼酎1杯', 140], ['梅酒1杯', 150], ['カクテル1杯', 150], ['ワイン1杯', 90],
-    ['ワイン1本', 550],
+    ['beer350', 'ビール350ml'], ['beer500', 'ビール500ml'], ['highball', 'ハイボール1杯'],
+    ['lemon_sour', 'レモンサワー350ml'], ['sake', '日本酒1合'], ['shochu', '焼酎1杯'], ['umeshu', '梅酒1杯'],
+    ['cocktail', 'カクテル1杯'], ['wine_glass', 'ワイン1杯'], ['wine_bottle', 'ワイン1本'],
   ]),
   ...t('snack_food', [
-    ['枝豆・冷奴', 100], ['刺身盛り', 200], ['焼き鳥3本', 300], ['唐揚げ', 350], ['フライドポテト', 400],
-    ['締めのラーメン', 500],
+    ['edamame', '枝豆・冷奴'], ['sashimi', '刺身盛り'], ['yakitori3', '焼き鳥3本'], ['karaage', '唐揚げ'],
+    ['fries_plate', 'フライドポテト'], ['shime_ramen', '締めのラーメン'],
   ]),
   ...t('meat', [
-    ['焼肉（ふつう）', 1200], ['焼肉食べ放題', 1800], ['ステーキ300g＋ライス', 1100], ['ハンバーグ定食', 900],
-    ['とんかつ定食', 1000],
+    ['yakiniku', '焼肉（ふつう）'], ['yakiniku_tabehoudai', '焼肉食べ放題'], ['steak300_rice', 'ステーキ300g＋ライス'],
+    ['hamburg_set', 'ハンバーグ定食'], ['tonkatsu_set', 'とんかつ定食'],
   ]),
   ...t('donburi', [
-    ['牛丼 並', 650], ['牛丼 大盛り', 900], ['カツ丼', 900], ['天丼', 800], ['カレー', 800], ['カツカレー', 1100],
+    ['gyudon', '牛丼 並'], ['gyudon_large', '牛丼 大盛り'], ['katsudon', 'カツ丼'], ['tendon', '天丼'],
+    ['curry', 'カレー'], ['katsu_curry', 'カツカレー'],
   ]),
-  ...t('sushi', [['回転寿司10皿', 850], ['回転寿司15皿', 1250], ['天ぷらそば', 550], ['うな重', 900]]),
+  ...t('sushi', [
+    ['sushi10', '回転寿司10皿'], ['sushi15', '回転寿司15皿'], ['tempura_soba', '天ぷらそば'], ['unaju', 'うな重'],
+  ]),
   ...t('pizza', [
-    ['ピザ M 半分', 800], ['ピザ M 1枚', 1600], ['カルボナーラ', 800], ['ミートソース', 650],
-    ['お好み焼き', 600], ['たこ焼き8個', 400],
+    ['pizza_m_half', 'ピザ M 半分'], ['pizza_m', 'ピザ M 1枚'], ['carbonara', 'カルボナーラ'],
+    ['meat_sauce', 'ミートソース'], ['okonomiyaki', 'お好み焼き'], ['takoyaki', 'たこ焼き8個'],
   ]),
   ...t('fastfood', [
-    ['ハンバーガー', 300], ['ダブルバーガー', 550], ['ポテトM', 400], ['ポテトL', 520], ['ナゲット5個', 270],
-    ['フライドチキン1本', 250], ['シェイク', 350],
+    ['hamburger', 'ハンバーガー'], ['double_burger', 'ダブルバーガー'], ['fries_m', 'ポテトM'], ['fries_l', 'ポテトL'],
+    ['nuggets', 'ナゲット5個'], ['fried_chicken', 'フライドチキン1本'], ['shake', 'シェイク'],
   ]),
   ...t('cake', [
-    ['ショートケーキ', 350], ['チーズケーキ', 300], ['チョコケーキ', 400], ['モンブラン', 400],
-    ['シュークリーム', 230], ['ドーナツ', 250], ['パフェ', 600], ['パンケーキ', 700],
+    ['shortcake', 'ショートケーキ'], ['cheesecake', 'チーズケーキ'], ['choco_cake', 'チョコケーキ'],
+    ['montblanc', 'モンブラン'], ['cream_puff', 'シュークリーム'], ['donut', 'ドーナツ'], ['parfait', 'パフェ'],
+    ['pancake_cream', 'パンケーキ'],
   ]),
-  ...t('wagashi', [['大福', 240], ['どら焼き', 280], ['団子2本', 260], ['たい焼き', 220]]),
-  ...t('ice', [['カップアイス', 250], ['ソフトクリーム', 200], ['アイスバー', 150]]),
+  ...t('wagashi', [['daifuku', '大福'], ['dorayaki', 'どら焼き'], ['dango2', '団子2本'], ['taiyaki', 'たい焼き']]),
+  ...t('ice', [['cup_ice', 'カップアイス'], ['soft_cream', 'ソフトクリーム'], ['ice_bar', 'アイスバー']]),
   ...t('sweets', [
-    ['ポテチ1袋', 340], ['ポテチ大袋', 550], ['チョコ板1枚', 280], ['クッキー5枚', 250], ['ポップコーン', 300],
-    ['せんべい3枚', 150],
+    ['chips', 'ポテチ1袋'], ['chips_large', 'ポテチ大袋'], ['choco_bar', 'チョコ板1枚'], ['cookies5', 'クッキー5枚'],
+    ['popcorn', 'ポップコーン'], ['senbei3', 'せんべい3枚'],
   ]),
-  ...t('bread', [['メロンパン', 400], ['カレーパン', 320], ['クロワッサン', 230], ['菓子パン', 350]]),
-  ...t('fruit', [['バナナ1本', 90], ['りんご1個', 150], ['みかん2個', 80], ['ぶどう1房', 150], ['いちご10粒', 50]]),
-  ...t('drink', [['タピオカミルクティー', 350], ['フラペチーノ', 400], ['甘いカフェラテ', 200], ['コーラ500ml', 220]]),
+  ...t('bread', [['melon_pan', 'メロンパン'], ['curry_pan', 'カレーパン'], ['croissant', 'クロワッサン'], ['kashi_pan', '菓子パン']]),
+  ...t('fruit', [
+    ['banana', 'バナナ1本'], ['apple', 'りんご1個'], ['mikan2', 'みかん2個'], ['grapes', 'ぶどう1房'],
+    ['strawberry10', 'いちご10粒'],
+  ]),
+  ...t('drink', [
+    ['tapioca', 'タピオカミルクティー'], ['frappe', 'フラペチーノ'], ['sweet_latte', '甘いカフェラテ'],
+    ['cola500', 'コーラ500ml'],
+  ]),
 ]

@@ -22,8 +22,8 @@ import {
   getMonthDateRange,
   getMonthlyWantRowCost,
   getReplacedMealKeys,
+  heartyCheatLabel,
 } from '@/lib/calories'
-import { heartyCheatLabel } from '@/components/MeshipoGauge'
 
 function monthLabel(year: number, month: number) {
   return `${year}年${month}月`

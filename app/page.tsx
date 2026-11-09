@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
@@ -20,24 +20,29 @@ import {
 } from '@/types'
 import {
   buildGaugeCheats,
+  buildGaugeMarkers,
   calcDailyIntakeFromPace,
-  calcEarnedBreakdown,
   calcPaceKgPerMonth,
   calcMealSlotTargets,
+  calcMonthWeightChange,
   calcWeightAverage,
-  calcMeshipoGauge,
   calcMonthEarnedBreakdown,
   calcWeekSummary,
+  calcZeroCalStatus,
+  describeMonthWeightChange,
+  describeWeekEarned,
+  describeZeroCalHeadline,
+  detectNewlyZeroed,
   expandCheatsForMonth,
   addDaysToDateStr,
   formatDateJST,
   formatMonthDayWeekday,
-  getDaysInMonth,
+  getGaugeCheatName,
   getRecordableDateRange,
   getReplacedMealKeys,
   getReviewWeek,
   getWeekRange,
-  sumMonthCheatCosts,
+  orderZeroCalCheats,
 } from '@/lib/calories'
 import { TAMEMESHI_PT, WEIGHT_AVG_DAYS } from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
@@ -47,8 +52,9 @@ import { WeightEntryCard } from '@/components/WeightEntryCard'
 import { useReducePace } from '@/lib/reducePace'
 import { useMilestones } from '@/lib/milestones'
 import { MilestoneCards } from '@/components/MilestoneCards'
-import { GaugeCheatList, MeshipoGauge } from '@/components/MeshipoGauge'
-import { WeeklyReviewCard } from '@/components/WeeklyReviewCard'
+import { MonthMeshitameCard } from '@/components/MonthMeshitameCard'
+import { WeekLine } from '@/components/WeekLine'
+import { Toast } from '@/components/Toast'
 
 const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'morning', label: '朝' },
@@ -72,17 +78,20 @@ export default function Home() {
   const [showExercise, setShowExercise] = useState(false)
   const [exampleSlot, setExampleSlot] = useState<MealSlot | null>(null)
   const [savingSlot, setSavingSlot] = useState<MealSlot | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const clearToast = useCallback(() => setToast(null), [])
+  // メシため・うごためを記録する直前の貯まったpt（記録後に0kcal化を判定する。13.3）
+  const ptBeforeRecord = useRef<number | null>(null)
 
   const today = formatDateJST(new Date())
   const year = Number(today.slice(0, 4))
   const month = Number(today.slice(5, 7))
-  const dayOfMonth = Number(today.slice(8, 10))
   const monthStart = `${today.slice(0, 7)}-01`
   const recordRange = getRecordableDateRange(today)
   // 記録の読み込み範囲：月初と7日前の早い方〜今日（前月の日を表示しても記録が見えるように）
   const loadFrom = recordRange.min < monthStart ? recordRange.min : monthStart
-  // 体重は、表示できる一番前の日の7日平均と、週の振り返りの前週比（前の週の日曜の7日平均）まで出せるように読む
-  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS * 2 - 1))
+  // 体重は、表示できる一番前の日の7日平均と、月初めからの変化（13.4）まで出せるように読む
+  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS - 1))
   const weightLoadFrom = weightFrom < loadFrom ? weightFrom : loadFrom
 
   // 表示中の日（7日前〜今日）。記録はこの日付で保存する
@@ -164,27 +173,44 @@ export default function Home() {
   )
   const exampleTarget = slotTargets.find((t) => t.slot === exampleSlot) ?? null
 
-  // メシポゲージ（月で1本・常に今月）。目標 = 登録したチート ＋ がっつり×300（12-2）
+  // 「◯月のメシため」（常に今月）。チート = 登録したチート ＋ がっつり（12-2）を並び順に累計して0kcal化（13.3）
   const replacedMealKeys = useMemo(() => getReplacedMealKeys(wants), [wants])
-  const gaugeCheats = useMemo(
-    () => buildGaugeCheats(expandCheatsForMonth(wants, year, month, slotTargets, today), mealLogs, year, month, replacedMealKeys),
+  const orderedCheats = useMemo(
+    () =>
+      orderZeroCalCheats(
+        buildGaugeCheats(expandCheatsForMonth(wants, year, month, slotTargets, today), mealLogs, year, month, replacedMealKeys)
+      ),
     [wants, year, month, slotTargets, today, mealLogs, replacedMealKeys]
   )
   const earned = calcMonthEarnedBreakdown({ year, month, today, mealLogs, exerciseLogs, replacedMealKeys })
-  const gauge = calcMeshipoGauge({
-    targetPt: sumMonthCheatCosts(gaugeCheats),
-    earnedPt: earned.totalPt,
-    dayOfMonth,
-    daysInMonth: getDaysInMonth(year, month),
-  })
+  const zeroCal = calcZeroCalStatus(orderedCheats, earned.totalPt)
+  const monthWeightChange = calcMonthWeightChange(weightLogs, today)
 
-  // 週（月〜日）：「今週 +◯pt」と、日曜・月曜の振り返り（12-5）
-  const thisWeek = getWeekRange(today)
-  const weekPt = calcEarnedBreakdown({ ...thisWeek, to: today, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
+  // 記録のあと、新たに0kcal化済みになったチートがあればトースト（複数なら最後の1件）
+  // （記録が保存されて mealLogs / exerciseLogs が変わったあとに1回だけ判定する）
+  useEffect(() => {
+    const before = ptBeforeRecord.current
+    if (before === null) return
+    ptBeforeRecord.current = null
+    const zeroed = detectNewlyZeroed(orderedCheats, before, earned.totalPt)
+    if (zeroed) setToast(`${getGaugeCheatName(zeroed)}、なかったことに。`)
+  }, [earned.totalPt, orderedCheats, exerciseLogs])
+
+  // 週（月〜日）：「今週 +◯pt」。日曜は今週、月曜は先週の分を振り返り文に置き換える（13.5）
   const reviewWeek = getReviewWeek(today)
-  const weekSummary = reviewWeek
-    ? calcWeekSummary({ from: reviewWeek.from, mealLogs, exerciseLogs, wants, slotTargets, weightLogs })
-    : null
+  const lineWeek = reviewWeek ?? getWeekRange(today)
+  const weekSummary = calcWeekSummary({
+    from: lineWeek.from,
+    until: today,
+    mealLogs,
+    exerciseLogs,
+    wants,
+    slotTargets,
+    weightLogs,
+  })
+  const weekLabel = reviewWeek
+    ? describeWeekEarned(weekSummary.earned.totalPt)
+    : `今週 +${weekSummary.earned.totalPt}pt`
   const viewLogs = mealLogs.filter((l) => l.log_date === viewDate)
   const viewWeight = weightLogs.find((w) => w.measured_at === viewDate) ?? null
   const viewAverage = calcWeightAverage(weightLogs, viewDate)
@@ -200,6 +226,7 @@ export default function Home() {
 
   async function setMealChoice(slot: MealSlot, choice: MealChoice) {
     setSavingSlot(slot)
+    ptBeforeRecord.current = earned.totalPt
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) { router.push('/login'); return }
 
@@ -214,16 +241,19 @@ export default function Home() {
 
     setSavingSlot(null)
     if (upErr) {
+      ptBeforeRecord.current = null
       setError(upErr.message)
       return
     }
-    if (data) {
-      const row = data as MealLogRow
-      setMealLogs((prev) => {
-        const rest = prev.filter((l) => !(l.log_date === row.log_date && l.slot === slot))
-        return [...rest, row]
-      })
+    if (!data) {
+      ptBeforeRecord.current = null
+      return
     }
+    const row = data as MealLogRow
+    setMealLogs((prev) => {
+      const rest = prev.filter((l) => !(l.log_date === row.log_date && l.slot === slot))
+      return [...rest, row]
+    })
   }
 
   function choiceFor(slot: MealSlot): MealChoice | null {
@@ -257,7 +287,7 @@ export default function Home() {
             <span className="text-amber-400">メシ</span>ため
           </h1>
           <p className="text-stone-500 text-sm mb-8">
-            まず目標を置くと、今日の目安とメシポゲージが使えます
+            まず目標を置くと、今日の目安とメシためが使えます
           </p>
           <button
             type="button"
@@ -337,13 +367,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* 今週の振り返り（12-5）：日曜と次の月曜 */}
-        {weekSummary && (
-          <section className="mb-6">
-            <WeeklyReviewCard summary={weekSummary} />
-          </section>
-        )}
-
         {/* 今朝の体重（11-1） */}
         {userId && (
           <section className="mb-6">
@@ -360,8 +383,7 @@ export default function Home() {
             />
             {viewAverage.avgKg !== null && (
               <button type="button" onClick={() => router.push('/weight')} className="text-stone-500 text-xs mt-1.5 px-1">
-                7日平均 <span className="text-stone-300">{viewAverage.avgKg.toFixed(1)}kg</span>
-                {viewAverage.isReference && '（参考値）'}
+                このところ <span className="text-stone-300">{viewAverage.avgKg.toFixed(1)}kg</span>前後
               </button>
             )}
           </section>
@@ -434,37 +456,20 @@ export default function Home() {
           </div>
         </section>
 
-        {/* メシポゲージ（月で1本） */}
+        {/* ◯月のメシため（13.3）と今週の行（13.5） */}
         <section className="mb-8">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-stone-300">{month}月のメシポゲージ</h2>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setShowExercise(true)}
-                className="bg-stone-800 text-amber-400 font-bold text-xs px-3 py-1.5 rounded-full"
-              >
-                ＋運動
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowCheatPicker(true)}
-                className="bg-amber-400 text-stone-950 font-bold text-xs px-3 py-1.5 rounded-full"
-              >
-                ＋チート
-              </button>
-            </div>
-          </div>
-
-          <MeshipoGauge
-            gauge={gauge}
+          <MonthMeshitameCard
+            month={month}
+            status={zeroCal}
+            markers={buildGaugeMarkers(zeroCal)}
+            headline={describeZeroCalHeadline(zeroCal)}
             earned={earned}
-            entries={gaugeCheats}
-            weekPt={weekPt}
-            onPlanCheats={() => router.push('/wants')}
+            weightLine={monthWeightChange === null ? null : describeMonthWeightChange(monthWeightChange)}
+            onAddExercise={() => setShowExercise(true)}
+            onAddCheat={() => setShowCheatPicker(true)}
           />
-          {gaugeCheats.length > 0 && <GaugeCheatList entries={gaugeCheats} />}
-          <button type="button" onClick={() => router.push('/wants')} className="text-amber-400 text-xs mt-3">
+          <WeekLine summary={weekSummary} label={weekLabel} />
+          <button type="button" onClick={() => router.push('/wants')} className="text-amber-400 text-xs mt-3 px-1">
             チートの一覧・編集
           </button>
         </section>
@@ -502,6 +507,7 @@ export default function Home() {
           onClose={() => setShowExercise(false)}
           onSaved={(row) => {
             setShowExercise(false)
+            ptBeforeRecord.current = earned.totalPt
             setExerciseLogs((prev) => [...prev, row])
           }}
         />
@@ -510,6 +516,8 @@ export default function Home() {
       {exampleTarget && (
         <MealExamplesSheet target={exampleTarget} onClose={() => setExampleSlot(null)} />
       )}
+
+      {toast && <Toast message={toast} onDone={clearToast} />}
 
       <BottomNav active="home" />
     </div>
