@@ -6,17 +6,24 @@ import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
 import { CheatItemPicker } from '@/components/CheatItemPicker'
 import {
+  MEAL_CHOICE_EMOJI,
   WANT_KIND_EMOJI,
   WANT_KIND_LABELS,
   type GoalPlanRow,
+  type MealLogRow,
   type MonthlyWantRow,
 } from '@/types'
-import { useMonthTargets } from '@/lib/monthTargets'
+import { useReducePace } from '@/lib/reducePace'
 import {
+  calcDailyIntakeFromPace,
   calcMealSlotTargets,
+  expandHeartyCheats,
   formatDateJST,
+  getMonthDateRange,
   getMonthlyWantRowCost,
+  getReplacedMealKeys,
 } from '@/lib/calories'
+import { heartyCheatLabel } from '@/components/MeshipoGauge'
 
 function monthLabel(year: number, month: number) {
   return `${year}年${month}月`
@@ -37,6 +44,7 @@ export default function WantsPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [goal, setGoal] = useState<GoalPlanRow | null>(null)
   const [addDate, setAddDate] = useState<string | null>(null) // null なら追加画面は閉じている
+  const [mealLogs, setMealLogs] = useState<MealLogRow[]>([])
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -84,13 +92,33 @@ export default function WantsPage() {
     [rows]
   )
 
-  // 表示している月の朝昼夜の目安（置き換えのコストに使う）。ホームと同じ月の目標（11-3）
-  const { targets: monthTargets } = useMonthTargets(goal, year, month)
+  // 朝昼夜の目安（置き換えのコストに使う）。1日の目安 = 必要量 − 減らすペース（12-3。どの月も同じ）
+  const { pace } = useReducePace(userId)
   const slotTargets = useMemo(
-    () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
-    [monthTargets]
+    () => (goal && pace ? calcMealSlotTargets(calcDailyIntakeFromPace(goal.tdee, goal.bmr, pace)) : []),
+    [goal, pace]
   )
   const costOf = (w: MonthlyWantRow) => getMonthlyWantRowCost(w, slotTargets)
+
+  // がっつりの記録も目標に入るチートとして出す（12-2。DBにチートの行は作らない）
+  useEffect(() => {
+    if (!userId) return
+    const { from, to } = getMonthDateRange(year, month)
+    let alive = true
+    supabase
+      .from('meal_logs')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('choice', 'hearty')
+      .gte('log_date', from)
+      .lte('log_date', to)
+      .then(({ data }) => { if (alive) setMealLogs((data as MealLogRow[]) || []) })
+    return () => { alive = false }
+  }, [userId, year, month])
+  const hearty = useMemo(() => {
+    const { from, to } = getMonthDateRange(year, month)
+    return expandHeartyCheats(mealLogs, from, to, getReplacedMealKeys(rows))
+  }, [mealLogs, rows, year, month])
 
   function shiftMonth(delta: number) {
     const d = new Date(year, month - 1 + delta, 1)
@@ -121,6 +149,7 @@ export default function WantsPage() {
     list.push(r)
     datedByDay.set(day, list)
   }
+  const heartyDays = new Set(hearty.map((e) => Number(e.date.slice(8, 10))))
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 pb-28">
@@ -162,6 +191,7 @@ export default function WantsPage() {
                 const day = i + 1
                 const key = `${prefix}-${String(day).padStart(2, '0')}`
                 const items = datedByDay.get(day) ?? []
+                const hasHearty = heartyDays.has(day)
                 const isToday = key === today
                 return (
                   <button
@@ -170,12 +200,13 @@ export default function WantsPage() {
                     onClick={() => setAddDate(key)}
                     className={`aspect-square rounded-xl text-xs flex flex-col items-center justify-center border ${
                       isToday ? 'border-amber-400/60' : 'border-stone-800'
-                    } ${items.length ? 'bg-amber-400/10' : 'bg-stone-900'}`}
+                    } ${items.length || hasHearty ? 'bg-amber-400/10' : 'bg-stone-900'}`}
                   >
                     <span className={isToday ? 'text-amber-400' : 'text-stone-400'}>{day}</span>
-                    {items.length > 0 && (
+                    {(items.length > 0 || hasHearty) && (
                       <span className="text-[10px] leading-none mt-0.5">
                         {items.map((w) => WANT_KIND_EMOJI[w.kind]).join('')}
+                        {hasHearty && MEAL_CHOICE_EMOJI.hearty}
                       </span>
                     )}
                   </button>
@@ -250,6 +281,24 @@ export default function WantsPage() {
                 </ul>
               )}
             </section>
+
+            {hearty.length > 0 && (
+              <section className="mb-6">
+                <h2 className="text-sm font-semibold text-stone-300 mb-1">がっつりの記録</h2>
+                <p className="text-stone-600 text-xs mb-3">記録をがっつりから変えると、自動で外れます</p>
+                <ul className="space-y-2">
+                  {hearty.map((e) => (
+                    <li
+                      key={`${e.date}:${e.slot}`}
+                      className="flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-3"
+                    >
+                      <p className="text-sm font-medium">{heartyCheatLabel(e.date, e.slot)}</p>
+                      <p className="text-stone-500 text-xs">{e.costPt}pt</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             <button
               type="button"

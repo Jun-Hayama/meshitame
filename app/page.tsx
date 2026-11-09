@@ -5,6 +5,9 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
 import {
+  MEAL_CHOICE_EMOJI,
+  MEAL_CHOICE_LABELS,
+  REDUCE_PACE_LABELS,
   WANT_KIND_EMOJI,
   WANT_KIND_LABELS,
   type ExerciseLogRow,
@@ -16,11 +19,15 @@ import {
   type WeightLog,
 } from '@/types'
 import {
-  calcExtendedPeriodMonths,
+  buildGaugeCheats,
+  calcDailyIntakeFromPace,
+  calcEarnedBreakdown,
+  calcPaceKgPerMonth,
   calcMealSlotTargets,
   calcWeightAverage,
   calcMeshipoGauge,
-  calcMonthEarnedPt,
+  calcMonthEarnedBreakdown,
+  calcWeekSummary,
   expandCheatsForMonth,
   addDaysToDateStr,
   formatDateJST,
@@ -28,16 +35,20 @@ import {
   getDaysInMonth,
   getRecordableDateRange,
   getReplacedMealKeys,
+  getReviewWeek,
+  getWeekRange,
   sumMonthCheatCosts,
 } from '@/lib/calories'
-import { MEAL_RECORD_DELTA, WEIGHT_AVG_DAYS } from '@/lib/calorieConstants'
+import { TAMEMESHI_PT, WEIGHT_AVG_DAYS } from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
 import { CheatItemPicker } from '@/components/CheatItemPicker'
 import { ExerciseSheet } from '@/components/ExerciseSheet'
 import { WeightEntryCard } from '@/components/WeightEntryCard'
-import { dismissCappedNotice, useMonthTargets } from '@/lib/monthTargets'
+import { useReducePace } from '@/lib/reducePace'
 import { useMilestones } from '@/lib/milestones'
 import { MilestoneCards } from '@/components/MilestoneCards'
+import { GaugeCheatList, MeshipoGauge } from '@/components/MeshipoGauge'
+import { WeeklyReviewCard } from '@/components/WeeklyReviewCard'
 
 const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'morning', label: '朝' },
@@ -45,11 +56,7 @@ const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'dinner', label: '夜' },
 ]
 
-const CHOICES: { choice: MealChoice; label: string }[] = [
-  { choice: 'light', label: '控えめ' },
-  { choice: 'normal', label: '目安どおり' },
-  { choice: 'hearty', label: 'がっつり' },
-]
+const CHOICES: MealChoice[] = ['light', 'normal', 'hearty']
 
 export default function Home() {
   const router = useRouter()
@@ -74,8 +81,8 @@ export default function Home() {
   const recordRange = getRecordableDateRange(today)
   // 記録の読み込み範囲：月初と7日前の早い方〜今日（前月の日を表示しても記録が見えるように）
   const loadFrom = recordRange.min < monthStart ? recordRange.min : monthStart
-  // 体重は、表示できる一番前の日の7日平均まで出せるように読む
-  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS - 1))
+  // 体重は、表示できる一番前の日の7日平均と、週の振り返りの前週比（前の週の日曜の7日平均）まで出せるように読む
+  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS * 2 - 1))
   const weightLoadFrom = weightFrom < loadFrom ? weightFrom : loadFrom
 
   // 表示中の日（7日前〜今日）。記録はこの日付で保存する
@@ -148,41 +155,36 @@ export default function Home() {
     })
   }, [router, today, loadFrom, weightLoadFrom])
 
-  // 今月の目安（メシポゲージのコスト計算用）。月初に決めて保存した値（11-3）
-  const { targets: monthTargets, error: targetsError, setTargets: setMonthTargets } = useMonthTargets(
-    goal,
-    year,
-    month
-  )
+  // 1日の目安 = 必要量 − 減らすペース（12-3）。どの月も同じ
+  const { pace, error: paceError } = useReducePace(userId)
+  const dailyIntakeKcal = goal && pace ? calcDailyIntakeFromPace(goal.tdee, goal.bmr, pace) : null
   const slotTargets = useMemo(
-    () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
-    [monthTargets]
+    () => (dailyIntakeKcal === null ? [] : calcMealSlotTargets(dailyIntakeKcal)),
+    [dailyIntakeKcal]
   )
+  const exampleTarget = slotTargets.find((t) => t.slot === exampleSlot) ?? null
 
-  // 表示中の日の月の目安（前月の日を表示しているときは前月の値）
-  const { targets: viewTargets } = useMonthTargets(
-    goal,
-    Number(viewDate.slice(0, 4)),
-    Number(viewDate.slice(5, 7))
-  )
-  const viewSlotTargets = useMemo(
-    () => (viewTargets ? calcMealSlotTargets(viewTargets.dailyIntakeKcal) : []),
-    [viewTargets]
-  )
-  const exampleTarget = viewSlotTargets.find((t) => t.slot === exampleSlot) ?? null
-
-  // メシポゲージ（月で1本・常に今月）
-  const cheatEntries = useMemo(
-    () => expandCheatsForMonth(wants, year, month, slotTargets, today),
-    [wants, year, month, slotTargets, today]
-  )
+  // メシポゲージ（月で1本・常に今月）。目標 = 登録したチート ＋ がっつり×300（12-2）
   const replacedMealKeys = useMemo(() => getReplacedMealKeys(wants), [wants])
+  const gaugeCheats = useMemo(
+    () => buildGaugeCheats(expandCheatsForMonth(wants, year, month, slotTargets, today), mealLogs, year, month, replacedMealKeys),
+    [wants, year, month, slotTargets, today, mealLogs, replacedMealKeys]
+  )
+  const earned = calcMonthEarnedBreakdown({ year, month, today, mealLogs, exerciseLogs, replacedMealKeys })
   const gauge = calcMeshipoGauge({
-    targetPt: sumMonthCheatCosts(cheatEntries),
-    earnedPt: calcMonthEarnedPt({ year, month, today, mealLogs, exerciseLogs, replacedMealKeys }),
+    targetPt: sumMonthCheatCosts(gaugeCheats),
+    earnedPt: earned.totalPt,
     dayOfMonth,
     daysInMonth: getDaysInMonth(year, month),
   })
+
+  // 週（月〜日）：「今週 +◯pt」と、日曜・月曜の振り返り（12-5）
+  const thisWeek = getWeekRange(today)
+  const weekPt = calcEarnedBreakdown({ ...thisWeek, to: today, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
+  const reviewWeek = getReviewWeek(today)
+  const weekSummary = reviewWeek
+    ? calcWeekSummary({ from: reviewWeek.from, mealLogs, exerciseLogs, wants, slotTargets, weightLogs })
+    : null
   const viewLogs = mealLogs.filter((l) => l.log_date === viewDate)
   const viewWeight = weightLogs.find((w) => w.measured_at === viewDate) ?? null
   const viewAverage = calcWeightAverage(weightLogs, viewDate)
@@ -238,7 +240,7 @@ export default function Home() {
     )
   }
 
-  if (loading || (goal && !monthTargets && !targetsError)) {
+  if (loading || (goal && !pace)) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-stone-950">
         <div className="text-amber-400 text-lg">読み込み中...</div>
@@ -305,11 +307,11 @@ export default function Home() {
               <span className="text-amber-400">メシ</span>ため
             </h1>
           </div>
-          <p className="text-stone-500 text-xs text-right">
-            目安 {viewTargets?.dailyIntakeKcal ?? '—'}kcal
+          <button type="button" onClick={() => router.push('/settings')} className="text-stone-500 text-xs text-right">
+            目安 {dailyIntakeKcal ?? '—'}kcal
             <br />
-            貯金 {viewTargets?.dailySaving.savingKcal ?? '—'}kcal/日
-          </p>
+            {pace && (pace === 'keep' ? REDUCE_PACE_LABELS.keep : `${REDUCE_PACE_LABELS[pace]}（月${calcPaceKgPerMonth(pace)}kg）`)}
+          </button>
         </header>
 
         {!isToday && (
@@ -326,7 +328,7 @@ export default function Home() {
         )}
 
         {error && <p className="text-rose-400 text-sm mb-4">{error}</p>}
-        {targetsError && <p className="text-rose-400 text-sm mb-4">{targetsError}</p>}
+        {paceError && <p className="text-rose-400 text-sm mb-4">{paceError}</p>}
 
         {/* ゲート達成・3%・5%（11-5） */}
         {milestones.length > 0 && (
@@ -335,53 +337,12 @@ export default function Home() {
           </div>
         )}
 
-        {/* 月の割り直し（11-3）：今月の目標の案内 */}
-        {monthTargets?.ahead && (
-          <div className="bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-3 mb-6">
-            <p className="text-amber-400 text-sm font-medium">ペースより先に進んでいます</p>
-            <p className="text-stone-400 text-xs mt-1">今月は貯金0kcal/日（維持）でゲート{monthTargets.gateIndex}の目標ペースです</p>
-          </div>
+        {/* 今週の振り返り（12-5）：日曜と次の月曜 */}
+        {weekSummary && (
+          <section className="mb-6">
+            <WeeklyReviewCard summary={weekSummary} />
+          </section>
         )}
-        {monthTargets?.dailySaving.capped && !monthTargets.cappedDismissed && (() => {
-          const avgKg = todayAverage.avgKg ?? monthTargets.startAvgKg
-          const extended =
-            avgKg === null ? null : calcExtendedPeriodMonths(avgKg, goal.target_weight_kg, monthTargets.dailySaving.capKcal)
-          return (
-            <div className="bg-stone-900 rounded-2xl px-4 py-3 mb-6">
-              <p className="text-stone-200 text-sm">
-                このままだとゲート{monthTargets.gateIndex}に約{monthTargets.shortfallKg.toFixed(1)}kg届かないペースです
-              </p>
-              <p className="text-stone-500 text-xs mt-1">
-                1日の貯金は上限の{monthTargets.dailySaving.capKcal}kcalにしています。どうするか選べます
-              </p>
-              <div className="flex gap-2 mt-3">
-                {extended !== null && avgKg !== null && (
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/setup?period=${extended}&weight=${avgKg.toFixed(1)}`)}
-                    className="flex-1 bg-amber-400 text-stone-950 font-bold text-xs py-2 rounded-xl"
-                  >
-                    期間を{extended}ヶ月に延ばす
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      setMonthTargets(await dismissCappedNotice(goal, year, month))
-                    } catch (e) {
-                      setError((e as Error).message)
-                    }
-                  }}
-                  className="flex-1 bg-stone-800 text-stone-300 text-xs py-2 rounded-xl"
-                >
-                  そのまま続ける
-                </button>
-              </div>
-              <p className="text-stone-600 text-[11px] mt-2">そのまま続けても、来月の割り直しでまた調整されます</p>
-            </div>
-          )
-        })()}
 
         {/* 今朝の体重（11-1） */}
         {userId && (
@@ -410,7 +371,7 @@ export default function Home() {
         <section className="mb-8">
           <h2 className="text-sm font-semibold text-stone-300 mb-3">{isToday ? '今日の目安' : 'この日の目安'}</h2>
           <ul className="grid grid-cols-3 gap-2">
-            {viewSlotTargets.map((t) => (
+            {slotTargets.map((t) => (
               <li key={t.slot} className="bg-stone-900 rounded-2xl px-3 py-3 relative">
                 <button
                   type="button"
@@ -448,7 +409,7 @@ export default function Home() {
                 <div key={slot} className="bg-stone-900 rounded-2xl px-4 py-3">
                   <p className="text-sm font-medium mb-2">{label}</p>
                   <div className="flex gap-2">
-                    {CHOICES.map(({ choice, label: cLabel }) => (
+                    {CHOICES.map((choice) => (
                       <button
                         key={choice}
                         type="button"
@@ -460,12 +421,9 @@ export default function Home() {
                             : 'bg-stone-800 text-stone-400'
                         }`}
                       >
-                        {cLabel}
-                        {selected === choice && MEAL_RECORD_DELTA[choice] !== 0 && (
-                          <span className="block text-[10px] opacity-80">
-                            {MEAL_RECORD_DELTA[choice] > 0 ? '+' : ''}
-                            {MEAL_RECORD_DELTA[choice]}
-                          </span>
+                        {MEAL_CHOICE_EMOJI[choice]} {MEAL_CHOICE_LABELS[choice]}
+                        {choice === 'light' && (
+                          <span className="block text-[10px] opacity-80">+{TAMEMESHI_PT}pt</span>
                         )}
                       </button>
                     ))}
@@ -498,80 +456,14 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="bg-stone-900 rounded-2xl px-4 py-4 mb-3">
-            <p className="text-sm mb-3">
-              メシポ <span className="text-amber-400 text-xl font-bold">{gauge.earnedPt}</span>
-              <span className="text-stone-500"> / {gauge.targetPt}pt</span>
-            </p>
-            <div className="relative h-3 bg-stone-800 rounded-full mb-2">
-              <div
-                className="absolute inset-y-0 left-0 bg-amber-400 rounded-full transition-all"
-                style={{ width: `${gauge.fillRatio * 100}%` }}
-              />
-              {gauge.targetPt > 0 && (
-                <div
-                  className="absolute -top-1 -bottom-1 w-0.5 bg-stone-100"
-                  style={{ left: `${gauge.paceRatio * 100}%` }}
-                  aria-label={`ペースの目印 ${gauge.pacePt}pt`}
-                />
-              )}
-            </div>
-            {gauge.targetPt > 0 && (
-              <p className="text-xs text-stone-400">
-                {gauge.extraPt > 0 ? (
-                  <span className="text-amber-400">あと{gauge.extraPt}pt分、追加でチートできる！</span>
-                ) : gauge.onPace ? (
-                  <span className="text-amber-400">ペースどおり</span>
-                ) : (
-                  <>
-                    あと{gauge.behindPt}ptでペースに追いつく
-                    <span className="block text-stone-500 mt-0.5">
-                      今日{gauge.catchUpWalkingMinutes}分歩くとペースに追いつく
-                    </span>
-                  </>
-                )}
-              </p>
-            )}
-            <p className="text-stone-500 text-xs mt-2">
-              {gauge.lightMealsNeeded === 0 ? '今月は軽めなしでOK' : `今月あと軽め${gauge.lightMealsNeeded}回`}
-            </p>
-          </div>
-
-          {cheatEntries.length === 0 ? (
-            <button
-              type="button"
-              onClick={() => setShowCheatPicker(true)}
-              className="w-full bg-stone-900 rounded-2xl px-4 py-6 text-center"
-            >
-              <p className="text-stone-400 text-sm mb-1">まだ今月のチートがありません</p>
-              <p className="text-amber-400 text-xs">タップして追加</p>
-            </button>
-          ) : (
-            <ul className="space-y-1.5">
-              {cheatEntries.map((e) => {
-                const name = e.row.label || WANT_KIND_LABELS[e.row.kind]
-                const done = e.mode === 'dated' && e.done
-                return (
-                  <li
-                    key={e.row.id}
-                    className={`flex items-center justify-between bg-stone-900 rounded-xl px-3 py-2 ${done ? 'opacity-50' : ''}`}
-                  >
-                    <span className="text-sm min-w-0 truncate">
-                      <span className="text-stone-500 text-xs mr-2">
-                        {e.mode === 'dated'
-                          ? e.date.slice(5).replace('-', '/')
-                          : `週${e.timesPerWeek}回（今月${e.timesInMonth}回分）`}
-                      </span>
-                      {WANT_KIND_EMOJI[e.row.kind]} {name}
-                    </span>
-                    <span className="text-xs shrink-0 ml-2">
-                      {done ? <span className="text-amber-400">★済み</span> : <span className="text-stone-500">{e.costPt}pt</span>}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+          <MeshipoGauge
+            gauge={gauge}
+            earned={earned}
+            entries={gaugeCheats}
+            weekPt={weekPt}
+            onPlanCheats={() => router.push('/wants')}
+          />
+          {gaugeCheats.length > 0 && <GaugeCheatList entries={gaugeCheats} />}
           <button type="button" onClick={() => router.push('/wants')} className="text-amber-400 text-xs mt-3">
             チートの一覧・編集
           </button>

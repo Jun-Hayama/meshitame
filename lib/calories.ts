@@ -28,6 +28,12 @@ import {
   WeightChartPoint,
   Milestone,
   MilestoneKind,
+  ReducePace,
+  HeartyCheatEntry,
+  GaugeCheatEntry,
+  EarnedBreakdown,
+  WeekSummary,
+  DatedCheatEntry,
 } from '@/types'
 import {
   KCAL_PER_KG,
@@ -38,8 +44,10 @@ import {
   GATE1_MIN_RATIO,
   MAX_DAILY_SAVING_KCAL,
   AVG_DAYS_PER_MONTH,
-  WANT_BUFFER_PER_DAY,
-  LIGHT_MEAL_KCAL,
+  REDUCE_PACE_KCAL,
+  TAMEMESHI_PT,
+  HEARTY_CHEAT_PT,
+  WEEK_EARNED_EQUIVALENTS,
   WANT_COSTS,
   EXERCISE_POINTS,
   MEAL_RECORD_DELTA,
@@ -203,7 +211,7 @@ export function calcMonthlyTarget(gateLossKg: number): number {
 }
 
 // 1日の貯金 = 月の目標kg × 7200 ÷ その月の日数
-// 上限 = min(750, TDEE − 基礎代謝 − 欲望用150)。目安パターンの合計が基礎代謝を下回らないようにする
+// 上限 = min(750, TDEE − 基礎代謝)。ゲートの計画（初回設定・月の割り直し）用で、1日の目安には使わない（12-3）
 export function calcDailySaving(
   monthlyTargetKg: number,
   year: number,
@@ -212,7 +220,7 @@ export function calcDailySaving(
   bmr: number
 ): DailySavingResult {
   const uncappedKcal = Math.round((monthlyTargetKg * KCAL_PER_KG) / getDaysInMonth(year, month))
-  const capKcal = Math.max(0, Math.min(MAX_DAILY_SAVING_KCAL, tdee - bmr - WANT_BUFFER_PER_DAY))
+  const capKcal = Math.max(0, Math.min(MAX_DAILY_SAVING_KCAL, tdee - bmr))
   const savingKcal = Math.min(uncappedKcal, capKcal)
   return { savingKcal, uncappedKcal, capKcal, capped: uncappedKcal > capKcal }
 }
@@ -220,6 +228,17 @@ export function calcDailySaving(
 // 1日の目安カロリー = TDEE − 1日の貯金（基礎代謝は下回らない）
 export function calcDailyIntakeTarget(tdee: number, dailySavingKcal: number, bmr: number): number {
   return Math.max(tdee - dailySavingKcal, bmr)
+}
+
+// --- 12-3. 毎日の目安 = 必要量 − 減らすペース（基礎代謝を下回るときは基礎代謝） ---
+// 画面の1日の目安はすべてこれで出す（ゲート・月の割り直しの1日の貯金は使わない）
+export function calcDailyIntakeFromPace(tdee: number, bmr: number, pace: ReducePace): number {
+  return calcDailyIntakeTarget(tdee, REDUCE_PACE_KCAL[pace], bmr)
+}
+
+// ペースの月あたりの目安kg（30日で換算。表示用：ゆっくり 0.5 / ふつう 1 / しっかり 2）
+export function calcPaceKgPerMonth(pace: ReducePace): number {
+  return Math.round(((REDUCE_PACE_KCAL[pace] * 30) / KCAL_PER_KG) * 10) / 10
 }
 
 // 1日の貯金をこのペースで続けたとき、目標kgまで何ヶ月かかるか（3ヶ月単位で切り上げ）
@@ -457,7 +476,7 @@ export function calcRecoveryOptions(deficitKcal: number, wants: WantEntry[]): Re
   if (deficitKcal <= 0) return []
 
   const walkCount = Math.ceil(deficitKcal / EXERCISE_POINTS.walking_30min)
-  const lightCount = Math.ceil(deficitKcal / LIGHT_MEAL_KCAL)
+  const lightCount = Math.ceil(deficitKcal / TAMEMESHI_PT)
 
   return [
     {
@@ -466,14 +485,14 @@ export function calcRecoveryOptions(deficitKcal: number, wants: WantEntry[]): Re
       count: walkCount,
       points: walkCount * EXERCISE_POINTS.walking_30min,
     },
-    { type: 'light_meals', count: lightCount, points: lightCount * LIGHT_MEAL_KCAL },
+    { type: 'light_meals', count: lightCount, points: lightCount * TAMEMESHI_PT },
     ...sortWants(wants).map(
       (w): RecoveryOption => ({ type: 'swap_want', wantId: w.id, kind: w.kind, points: getWantCost(w) })
     ),
   ]
 }
 
-// 朝・昼・夜の目安kcal（毎日共通）。合計は「1日の目安 − 欲望用150」
+// 朝・昼・夜の目安kcal（毎日共通）。合計は1日の目安（12-3で −150 は廃止）
 export interface MealSlotTarget {
   slot: MealSlot
   label: string
@@ -482,6 +501,8 @@ export interface MealSlotTarget {
 
 const SLOT_RATIOS: [number, number, number] = [0.25, 0.35, 0.4]
 
+const SLOT_ORDER: MealSlot[] = ['morning', 'lunch', 'dinner']
+
 const SLOT_LABELS: Record<MealSlot, string> = {
   morning: '朝',
   lunch: '昼',
@@ -489,8 +510,8 @@ const SLOT_LABELS: Record<MealSlot, string> = {
 }
 
 export function calcMealSlotTargets(dailyIntakeKcal: number): MealSlotTarget[] {
-  const totalKcal = Math.max(0, dailyIntakeKcal - WANT_BUFFER_PER_DAY)
-  const slots: MealSlot[] = ['morning', 'lunch', 'dinner']
+  const totalKcal = Math.max(0, dailyIntakeKcal)
+  const slots = SLOT_ORDER
   let allocated = 0
   return slots.map((slot, i) => {
     const kcal =
@@ -579,11 +600,11 @@ export function buildCheatLabel(items: Pick<CheatItemSelection, 'name' | 'qty'>[
   return items.map((i) => (i.qty > 1 ? `${i.name}×${i.qty}` : i.name)).join('＋')
 }
 
-// 「このチートは ◯pt ＝ 軽め◯回 or ウォーキング◯分」
-export function convertCheatCost(costPt: number): { lightMeals: number; walkingMinutes: number } {
+// 「このチートは ◯pt ＝ ためメシ◯回 or ウォーキング◯分」
+export function convertCheatCost(costPt: number): { tamemeshi: number; walkingMinutes: number } {
   const pt = Math.max(0, costPt)
   return {
-    lightMeals: Math.ceil(pt / LIGHT_MEAL_KCAL),
+    tamemeshi: Math.ceil(pt / TAMEMESHI_PT),
     walkingMinutes: Math.ceil(pt / EXERCISE_PT_PER_MIN.walking),
   }
 }
@@ -680,28 +701,82 @@ export function getReplacedMealKeys(
   return keys
 }
 
-// 今日までに貯まったpt（どの日の分も同じ月のプールに入る）
-// = 経過日数 × 150 + 記録の3択（軽め +150 / がっつり −300）+ 運動のpt
-// 経過日数は今日を含む。置き換えたチートがある食事の記録は数えない（コストが二重に引かれないように）
-export function calcMonthEarnedPt(input: {
+// --- 12-2. がっつりはチートとして目標に足す ---
+
+// がっつりの記録をチートの行にする（DBには作らない）。日付・食事の順
+// 置き換えのチートが入っている食事（★チート表示）のがっつりは数えない（置き換えのコストと二重にしない）
+export function expandHeartyCheats(
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[],
+  from: string,
+  to: string,
+  replacedMealKeys?: Set<string>
+): HeartyCheatEntry[] {
+  return mealLogs
+    .filter(
+      (l) =>
+        l.choice === 'hearty' &&
+        l.log_date >= from &&
+        l.log_date <= to &&
+        !replacedMealKeys?.has(`${l.log_date}:${l.slot}`)
+    )
+    .sort((a, b) => a.log_date.localeCompare(b.log_date) || SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot))
+    .map((l) => ({ mode: 'hearty', date: l.log_date, slot: l.slot, costPt: HEARTY_CHEAT_PT }))
+}
+
+// その月の初日・末日
+export function getMonthDateRange(year: number, month: number): { from: string; to: string } {
+  const prefix = monthPrefix(year, month)
+  return { from: `${prefix}-01`, to: `${prefix}-${String(getDaysInMonth(year, month)).padStart(2, '0')}` }
+}
+
+// ゲージの目標に入るチート：登録したチート ＋ その月のがっつり
+export function buildGaugeCheats(
+  cheats: MonthCheatEntry[],
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[],
+  year: number,
+  month: number,
+  replacedMealKeys?: Set<string>
+): GaugeCheatEntry[] {
+  const { from, to } = getMonthDateRange(year, month)
+  return [...cheats, ...expandHeartyCheats(mealLogs, from, to, replacedMealKeys)]
+}
+
+// --- 12-2. 貯まったpt = ためメシ × 150 ＋ 運動pt ---
+// いつもの・記録なしは0pt。がっつりは引かない（目標に足す）
+// 置き換えたチートがある食事の記録は数えない
+
+export function calcEarnedBreakdown(input: {
+  from: string
+  to: string
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  exerciseLogs: { log_date: string; points: number }[]
+  replacedMealKeys?: Set<string>
+}): EarnedBreakdown {
+  const { from, to, mealLogs, exerciseLogs, replacedMealKeys } = input
+  const inRange = (d: string) => d >= from && d <= to
+  const tamemeshiCount = mealLogs.filter(
+    (l) => l.choice === 'light' && inRange(l.log_date) && !replacedMealKeys?.has(`${l.log_date}:${l.slot}`)
+  ).length
+  const tamemeshiPt = tamemeshiCount * TAMEMESHI_PT
+  const exercisePt = exerciseLogs.filter((l) => inRange(l.log_date)).reduce((sum, l) => sum + l.points, 0)
+  return { tamemeshiCount, tamemeshiPt, exercisePt, totalPt: tamemeshiPt + exercisePt }
+}
+
+// その月の今日までの内訳（どの日の分も同じ月のプールに入る）
+export function calcMonthEarnedBreakdown(input: {
   year: number
   month: number
   today: string // YYYY-MM-DD（日本時間）
   mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
   exerciseLogs: { log_date: string; points: number }[]
   replacedMealKeys?: Set<string>
-}): number {
-  const { year, month, today, mealLogs, exerciseLogs, replacedMealKeys } = input
-  const prefix = monthPrefix(year, month)
-  const inMonth = (d: string) => d.startsWith(prefix) && d <= today
-  const elapsedDays = today.startsWith(prefix) ? Number(today.slice(8, 10)) : today > prefix ? getDaysInMonth(year, month) : 0
+}): EarnedBreakdown {
+  const { from, to } = getMonthDateRange(input.year, input.month)
+  return calcEarnedBreakdown({ ...input, from, to: to < input.today ? to : input.today })
+}
 
-  const mealPt = mealLogs
-    .filter((l) => inMonth(l.log_date) && !replacedMealKeys?.has(`${l.log_date}:${l.slot}`))
-    .reduce((sum, l) => sum - MEAL_RECORD_DELTA[l.choice], 0)
-  const exercisePt = exerciseLogs.filter((l) => inMonth(l.log_date)).reduce((sum, l) => sum + l.points, 0)
-
-  return elapsedDays * WANT_BUFFER_PER_DAY + mealPt + exercisePt
+export function calcMonthEarnedPt(input: Parameters<typeof calcMonthEarnedBreakdown>[0]): number {
+  return calcMonthEarnedBreakdown(input).totalPt
 }
 
 export function calcMeshipoGauge(input: {
@@ -713,7 +788,6 @@ export function calcMeshipoGauge(input: {
   const { targetPt, earnedPt, dayOfMonth, daysInMonth } = input
   const pacePt = Math.round((targetPt * dayOfMonth) / daysInMonth)
   const behindPt = Math.max(0, pacePt - earnedPt)
-  const projectedPt = earnedPt + (daysInMonth - dayOfMonth) * WANT_BUFFER_PER_DAY
   return {
     targetPt,
     earnedPt,
@@ -722,11 +796,84 @@ export function calcMeshipoGauge(input: {
     behindPt,
     catchUpWalkingMinutes: Math.ceil(behindPt / EXERCISE_PT_PER_MIN.walking),
     extraPt: Math.max(0, earnedPt - targetPt),
-    projectedPt,
-    lightMealsNeeded: Math.max(0, Math.ceil((targetPt - projectedPt) / LIGHT_MEAL_KCAL)),
+    tamemeshiNeeded: Math.max(0, Math.ceil((targetPt - earnedPt) / TAMEMESHI_PT)),
     fillRatio: targetPt > 0 ? Math.min(1, Math.max(0, earnedPt / targetPt)) : 1,
     paceRatio: Math.min(1, dayOfMonth / daysInMonth),
   }
+}
+
+// --- 12-5. 週の振り返り（月曜〜日曜・日本時間。月をまたいでも日付で集計する） ---
+
+// 0=日 … 6=土
+function weekdayOf(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay()
+}
+
+// その日を含む週（月曜〜日曜）
+export function getWeekRange(dateStr: string): { from: string; to: string } {
+  const from = addDaysToDateStr(dateStr, -((weekdayOf(dateStr) + 6) % 7))
+  return { from, to: addDaysToDateStr(from, 6) }
+}
+
+// 振り返りカードを出す週：日曜はその週、月曜は前の週。ほかの曜日は null
+export function getReviewWeek(today: string): { from: string; to: string } | null {
+  const weekday = weekdayOf(today)
+  if (weekday === 0) return getWeekRange(today)
+  if (weekday === 1) return getWeekRange(addDaysToDateStr(today, -1))
+  return null
+}
+
+export function calcWeekSummary(input: {
+  from: string // 月曜
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  exerciseLogs: { log_date: string; points: number }[]
+  wants: MonthlyWantRow[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+  weightLogs: WeightPoint[]
+}): WeekSummary {
+  const { from, mealLogs, exerciseLogs, wants, slotTargets, weightLogs } = input
+  const to = addDaysToDateStr(from, 6)
+  const active = wants.filter((r) => r.is_active !== false)
+  const replacedMealKeys = getReplacedMealKeys(active)
+
+  const dated: DatedCheatEntry[] = active
+    .filter((r) => r.scheduled_date != null && r.scheduled_date >= from && r.scheduled_date <= to)
+    .sort((a, b) => (a.scheduled_date as string).localeCompare(b.scheduled_date as string))
+    .map((row) => ({
+      mode: 'dated',
+      row,
+      date: row.scheduled_date as string,
+      costPt: getMonthlyWantRowCost(row, slotTargets),
+      done: true,
+    }))
+  const cheats: WeekSummary['cheats'] = [...dated, ...expandHeartyCheats(mealLogs, from, to, replacedMealKeys)].sort(
+    (a, b) => a.date.localeCompare(b.date)
+  )
+  const frequencyCheats = active
+    .filter((r) => r.scheduled_date == null && (r.times_per_week ?? 0) > 0)
+    .map((row) => {
+      const timesPerWeek = row.times_per_week as number
+      return { row, timesPerWeek, costPt: getMonthlyWantRowCost(row, slotTargets) * timesPerWeek }
+    })
+
+  return {
+    from,
+    to,
+    earned: calcEarnedBreakdown({ from, to, mealLogs, exerciseLogs, replacedMealKeys }),
+    cheats,
+    frequencyCheats,
+    cheatPt: cheats.reduce((sum, e) => sum + e.costPt, 0) + frequencyCheats.reduce((sum, e) => sum + e.costPt, 0),
+    weightDiffKg: calcWeekOverWeek(weightLogs, to).diffKg,
+  }
+}
+
+// 「今週は+600pt！ワイン1本ぶん貯まりました🍷」。0ptのときも責めない
+export function describeWeekEarned(pt: number): string {
+  if (pt <= 0) return '今週はひと休み。来週のためメシでまた貯めていこう'
+  const eq = [...WEEK_EARNED_EQUIVALENTS].reverse().find((e) => e.pt <= pt)
+  if (!eq) return `今週は+${pt}pt！コツコツ貯まっています`
+  return `今週は+${pt}pt！${eq.label}ぶん貯まりました${eq.emoji}`
 }
 
 // --- 10-5. 運動の記録 ---
@@ -803,11 +950,12 @@ export function calcWeekOverWeek(logs: WeightPoint[], date: string): WeekOverWee
   return { diffKg: now.avgKg - before.avgKg, isReference: now.isReference || before.isReference }
 }
 
-// 「−0.4kg」「+0.3kg」「±0.0kg」（0.1kg単位）
-export function formatSignedKg(diffKg: number): string {
+// 前週比の表記（0.1kg単位）。記号は使わない：「0.4kg減」「0.3kg増」「変わらず」
+export function formatWeightChange(diffKg: number): string {
   const tenths = Math.round(diffKg * 10)
-  if (tenths === 0) return '±0.0kg'
-  return `${tenths > 0 ? '+' : '−'}${(Math.abs(tenths) / 10).toFixed(1)}kg`
+  if (tenths === 0) return '変わらず'
+  const kg = `${(Math.abs(tenths) / 10).toFixed(1)}kg`
+  return tenths < 0 ? `${kg}減` : `${kg}増`
 }
 
 // --- 11-4. 進捗チャート ---
@@ -949,7 +1097,7 @@ export function detectNewMilestones(
   for (const g of plan.gates) {
     const kind: MilestoneKind = `gate${g.index}`
     if (!achieved.has(kind) && avgKg <= g.targetWeightKg + EPSILON) {
-      found.push({ kind, title: `ゲート${g.index}達成！`, message: `開始から −${lossKg.toFixed(1)}kg。この調子でいこう` })
+      found.push({ kind, title: `ゲート${g.index}達成！`, message: `開始から ${lossKg.toFixed(1)}kg 減った。この調子でいこう` })
     }
   }
   for (const h of HEALTH_MILESTONES) {

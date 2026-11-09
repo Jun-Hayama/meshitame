@@ -8,13 +8,14 @@ import {
   calcTDEE,
   checkLossLimit,
   calcGates,
-  calcCurrentMonthTargets,
-  estimateMonthsToTarget,
+  calcDailyIntakeFromPace,
+  calcPaceKgPerMonth,
   formatDateJST,
   parseWeightInput,
 } from '@/lib/calories'
-import type { GoalPlanRow } from '@/types'
-import { GATE_MONTHS } from '@/lib/calorieConstants'
+import { REDUCE_PACE_LABELS, type GoalPlanRow, type ReducePace } from '@/types'
+import { DEFAULT_REDUCE_PACE, GATE_MONTHS } from '@/lib/calorieConstants'
+import { useReducePace } from '@/lib/reducePace'
 
 type Sex = 'male' | 'female' | 'other'
 type ActivityLevel = 'low' | 'moderate' | 'high'
@@ -44,10 +45,10 @@ function calcGoal(
   { h, w, tw, a }: { h: number; w: number; tw: number; a: number },
   sex: Sex,
   activityLevel: ActivityLevel,
-  periodMonths: number
+  periodMonths: number,
+  pace: ReducePace
 ) {
-  const now = new Date()
-  const startDate = formatDateJST(now)
+  const startDate = formatDateJST(new Date())
   const bmr = calcBaseMetabolism(w, h, a, sex)
   const tdee = calcTDEE(bmr, activityLevel)
   const limit = checkLossLimit({
@@ -57,14 +58,9 @@ function calcGoal(
     periodMonths,
   })
   const gatePlan = calcGates(w, limit.targetLossKg, periodMonths)
-  const { dailySaving, dailyIntakeKcal: dailyIntake } = calcCurrentMonthTargets(
-    { start_date: startDate, period_months: periodMonths, gates: gatePlan.gates, tdee, bmr },
-    now
-  )
-  const monthsAtCap = dailySaving.capped
-    ? estimateMonthsToTarget(limit.targetLossKg, dailySaving.savingKcal)
-    : null
-  return { startDate, bmr, tdee, limit, gatePlan, dailySaving, dailyIntake, monthsAtCap }
+  // 1日の目安は減らすペースで決める（12-3）。ゲートは長期の目標として保存する
+  const dailyIntake = calcDailyIntakeFromPace(tdee, bmr, pace)
+  return { startDate, bmr, tdee, limit, gatePlan, dailyIntake }
 }
 
 export default function SetupPage() {
@@ -80,10 +76,14 @@ export default function SetupPage() {
   const [sex, setSex] = useState<Sex>('male')
   const [activityLevel, setActivityLevel] = useState<ActivityLevel>('moderate')
   const [periodMonths, setPeriodMonths] = useState(12)
+  const [userId, setUserId] = useState<string | null>(null)
+  const { pace: loadedPace } = useReducePace(userId)
+  const pace = loadedPace ?? DEFAULT_REDUCE_PACE
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.replace('/login'); return }
+      setUserId(user.id)
 
       // 有効な目標があればそれを、なければプロフィールを初期値にする
       const { data: plan } = await supabase
@@ -130,7 +130,7 @@ export default function SetupPage() {
   const parsed = parseInputs(height, weight, targetWeight, age)
 
   const result = parsed.values
-    ? calcGoal(parsed.values, sex, activityLevel, periodMonths)
+    ? calcGoal(parsed.values, sex, activityLevel, periodMonths, pace)
     : null
 
   const periodOptions = PERIOD_OPTIONS.includes(periodMonths)
@@ -295,13 +295,13 @@ export default function SetupPage() {
               {result.limit.withinLimit ? (
                 <div className="bg-amber-400/10 border border-amber-400/20 rounded-2xl px-4 py-3">
                   <p className="text-amber-400 text-sm font-medium">
-                    {periodMonths}ヶ月で −{result.limit.targetLossKg.toFixed(1)}kg は、無理のないペースです ✨
+                    {periodMonths}ヶ月で {result.limit.targetLossKg.toFixed(1)}kg 減らすのは、無理のないペースです ✨
                   </p>
                 </div>
               ) : (
                 <div className="bg-stone-900 border border-amber-400/30 rounded-2xl px-4 py-3 space-y-2">
                   <p className="text-stone-200 text-sm">
-                    {periodMonths}ヶ月だと少し急ぎ足のペースです（目安は −{result.limit.limitKg.toFixed(1)}kg まで）
+                    {periodMonths}ヶ月だと少し急ぎ足のペースです（目安は {result.limit.limitKg.toFixed(1)}kg 減まで）
                   </p>
                   {result.limit.suggestedPeriodMonths && (
                     <button
@@ -324,47 +324,34 @@ export default function SetupPage() {
                         <li key={g.index} className="flex justify-between text-sm">
                           <span className="text-stone-400">ゲート{g.index}（{g.endMonth}ヶ月目）</span>
                           <span className="text-stone-100 tabular-nums">
-                            −{g.lossKg.toFixed(2)}kg → <span className="text-amber-400 font-medium">{g.targetWeightKg.toFixed(1)}kg</span>
+                            {g.lossKg.toFixed(2)}kg 減 → <span className="text-amber-400 font-medium">{g.targetWeightKg.toFixed(1)}kg</span>
                           </span>
                         </li>
                       ))}
                     </ul>
                   </div>
 
-                  {/* 今月 */}
-                  <div className="bg-stone-900 rounded-2xl px-4 py-4 grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="text-stone-500 text-xs mb-1">今月の1日の貯金</p>
-                      <p className="text-amber-400 font-bold text-2xl tabular-nums">
-                        {result.dailySaving.savingKcal}<span className="text-stone-500 text-sm font-normal"> kcal</span>
-                      </p>
+                  {/* 1日の目安（12-3） */}
+                  <div className="bg-stone-900 rounded-2xl px-4 py-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-stone-500 text-xs mb-1">1日の必要量</p>
+                        <p className="text-stone-200 font-bold text-2xl tabular-nums">
+                          {result.tdee}<span className="text-stone-500 text-sm font-normal"> kcal</span>
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-stone-500 text-xs mb-1">1日の目安</p>
+                        <p className="text-amber-400 font-bold text-2xl tabular-nums">
+                          {result.dailyIntake}<span className="text-stone-500 text-sm font-normal"> kcal</span>
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-stone-500 text-xs mb-1">1日の目安</p>
-                      <p className="text-amber-400 font-bold text-2xl tabular-nums">
-                        {result.dailyIntake}<span className="text-stone-500 text-sm font-normal"> kcal</span>
-                      </p>
-                    </div>
+                    <p className="text-stone-500 text-xs mt-3">
+                      減らすペース：{REDUCE_PACE_LABELS[pace]}
+                      {pace !== 'keep' && `（月${calcPaceKgPerMonth(pace)}kg）`}。設定画面で変えられます
+                    </p>
                   </div>
-
-                  {/* 1日の貯金が上限で止まるとき */}
-                  {result.dailySaving.capped && (
-                    <div className="bg-stone-900 border border-amber-400/30 rounded-2xl px-4 py-3 space-y-2">
-                      <p className="text-stone-200 text-sm">
-                        1日の貯金は {result.dailySaving.capKcal}kcal までにしています。
-                        {result.monthsAtCap !== null &&
-                          ` このペースだと −${result.limit.targetLossKg.toFixed(1)}kg まで約${result.monthsAtCap}ヶ月です`}
-                      </p>
-                      {result.monthsAtCap !== null && result.monthsAtCap > periodMonths && (
-                        <button
-                          onClick={() => setPeriodMonths(result.monthsAtCap!)}
-                          className="w-full bg-amber-400 text-stone-950 text-sm font-bold py-2.5 rounded-2xl"
-                        >
-                          期間を{result.monthsAtCap}ヶ月にする →
-                        </button>
-                      )}
-                    </div>
-                  )}
                 </>
               )}
             </>

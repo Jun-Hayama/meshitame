@@ -12,16 +12,16 @@ import type {
 } from '@/types'
 import {
   buildCheatLabel,
+  calcDailyIntakeFromPace,
   calcMealSlotTargets,
   convertCheatCost,
-  formatDateJST,
   getCheatKind,
   getDefaultCheatType,
   getMonthlyWantRowCost,
   sortCheatItemsByUsage,
   sumCheatItemsKcal,
 } from '@/lib/calories'
-import { useMonthTargets } from '@/lib/monthTargets'
+import { useReducePace } from '@/lib/reducePace'
 import { CHEAT_GENRES, CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 
 type AddMode = 'date' | 'frequency'
@@ -98,12 +98,11 @@ export function CheatItemPicker({
     return sortCheatItemsByUsage(filtered, history)
   }, [allItems, search, genre, history])
 
-  // コストは日付の月の目安で計算する（頻度ベースは今日の月）。ホームと同じ月の目標（11-3）
-  const costMonth = mode === 'date' && date ? date : formatDateJST(new Date())
-  const { targets: monthTargets } = useMonthTargets(goal, Number(costMonth.slice(0, 4)), Number(costMonth.slice(5, 7)))
+  // 置き換えのコストに使う食事の目安。1日の目安 = 必要量 − 減らすペース（12-3。どの月も同じ）
+  const { pace } = useReducePace(userId)
   const slotTargets = useMemo(
-    () => (monthTargets ? calcMealSlotTargets(monthTargets.dailyIntakeKcal) : []),
-    [monthTargets]
+    () => (goal && pace ? calcMealSlotTargets(calcDailyIntakeFromPace(goal.tdee, goal.bmr, pace)) : []),
+    [goal, pace]
   )
 
   const totalKcal = sumCheatItemsKcal(selections)
@@ -381,7 +380,7 @@ export function CheatItemPicker({
         {selections.length > 0 && (
           <div className="bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-3 mb-4">
             <p className="text-amber-400 text-sm font-medium">
-              このチートは {costPt}pt ＝ 軽め{conversion.lightMeals}回 or ウォーキング{conversion.walkingMinutes}分
+              このチートは {costPt}pt ＝ 🐷ためメシ{conversion.tamemeshi}回 or ウォーキング{conversion.walkingMinutes}分
             </p>
             <p className="text-stone-500 text-[11px] mt-1">
               合計 {totalKcal}kcal

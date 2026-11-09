@@ -1,6 +1,6 @@
 // v2 計算ロジックの数値（docs/v2-spec.md 6章・6-3）
 // 調整するときはこのファイルだけを変更する
-import type { WantKind } from '@/types'
+import type { ReducePace, WantKind } from '@/types'
 
 // 体重換算
 export const KCAL_PER_KG = 7200
@@ -26,18 +26,26 @@ export const MAX_DAILY_SAVING_KCAL = 750
 // 期間の目安計算に使う1ヶ月の平均日数
 export const AVG_DAYS_PER_MONTH = 30.4
 
-// 欲望用の貯金（目安パターンの合計 = 1日の目安カロリー − この値）
-export const WANT_BUFFER_PER_DAY = 150
+// 減らすペース（12-3）：1日の目安 = 必要量 − この値（kcal/日。月0/0.5/1/2kg相当）
+export const REDUCE_PACE_KCAL: Record<ReducePace, number> = {
+  keep: 0, // キープ
+  slow: 120, // ゆっくり
+  normal: 240, // ふつう
+  hard: 480, // しっかり
+}
+export const DEFAULT_REDUCE_PACE: ReducePace = 'slow'
 
-// 毎日の記録（1食あたりの差分）
+// 毎日の記録（1食あたりの差分。10-2のがっつりの例の基準にも使う）
 export const MEAL_RECORD_DELTA = {
-  light: -150, // 控えめ
-  normal: 0, // 目安どおり
+  light: -150, // ためメシ
+  normal: 0, // いつもの
   hearty: 300, // がっつり
 } as const
 
-// 軽め
-export const LIGHT_MEAL_KCAL = -MEAL_RECORD_DELTA.light // 軽め1回 = 控えめ1食（150kcal）
+// ためメシ1回で貯まるpt（12-2）
+export const TAMEMESHI_PT = -MEAL_RECORD_DELTA.light
+// がっつり1回をチートとして目標に足すpt（12-2）
+export const HEARTY_CHEAT_PT = MEAL_RECORD_DELTA.hearty
 
 // 欲望のコスト
 export const WANT_COSTS: Record<WantKind, number> = {
@@ -86,4 +94,15 @@ export const CHART_Y_PADDING_KG = 0.5
 export const HEALTH_MILESTONES = [
   { kind: 'loss3', ratio: 0.03, message: '血糖値や中性脂肪の改善が期待できるライン' },
   { kind: 'loss5', ratio: 0.05, message: '血圧の改善も期待できるライン' },
+] as const
+
+// 週の振り返り（12-5）：貯めたptを「◯◯ぶん」に言いかえる目安（kcalはチートアイテム表と同じ。小さい順）
+export const WEEK_EARNED_EQUIVALENTS = [
+  { pt: 140, label: 'ビール1本', emoji: '🍺' },
+  { pt: 250, label: 'ケーキ1個', emoji: '🍰' },
+  { pt: 400, label: 'ポテトM', emoji: '🍟' },
+  { pt: 550, label: 'ワイン1本', emoji: '🍷' },
+  { pt: 800, label: 'カレー1皿', emoji: '🍛' },
+  { pt: 1200, label: '焼肉', emoji: '🥩' },
+  { pt: 1800, label: '飲み会1回', emoji: '🍻' },
 ] as const

@@ -1,148 +1,112 @@
 @AGENTS.md
 
-# メシため（meshitame）
+# メシため - CLAUDE.md（v2）
 
-食べたいものを先に決めて、そのために貯めて、ちゃんと痩せていく PWA。 仕様の正本は `docs/v2-spec.md`。迷ったら仕様書を読み、仕様書と食い違うコードは仕様書に合わせる（10章は前の章より優先）。
+## コンセプト
 
-## コンセプト・哲学
+**「食べたいものを先に決めて、そのために貯める」**
 
-- 食べたい・飲みたいを全力で肯定する。チート（★）はアプリが勝手に削らない・動かさない
-- 軽めの食事と運動は「チートのためにメシポを貯める」行動として表現する
-- 「我慢」「禁止」「食べすぎ」は使わない。マイナス時も事実だけを伝え、責めない
-- 細かく管理させない。毎日の記録は3秒で終わること
-- 計算・判定はすべてロジック（決定的な純粋関数）。AIは相談機能だけに使う
+チート（食べたい・飲みたいもの）を月の初めに登録し、ためメシや運動でメシポを貯めて実現する。ヘルシーな食事や運動は「我慢」ではなく「チートのための貯金」。
 
-## 主な仕組み（v2）
+### 哲学
 
-- **初回設定**（`/setup`）：身長・体重・目標・期間 → BMIで年間上限をチェック → 3ヶ月ごとのゲートに配分（12ヶ月は 35/30/20/15%）→ 今月の1日の貯金と目安カロリー
-- **今日の目安**：朝・昼・夜の目安kcalだけ表示。「?」で目安くらい／がっつりのメニュー例（`lib/mealExamples.ts`）
-- **毎日の記録**：各食事を 控えめ / 目安どおり / がっつり の3択。記録しない日は目安どおり扱い。7日前まで過去の日も記録できる
-- **チート**（`/wants`、コード上は want）：アイテム（`lib/cheatItems.ts`）を数量つきで組み合わせて登録。置き換え（コスト = 合計 − その食事の目安）か上乗せ（コスト = 合計）
-- **メシポゲージ**：月に1本。目標 = その月のチートのコスト合計、貯まったpt = 経過日数×150 ＋ 軽め×150 − がっつり×300 ＋ 運動pt。1pt = 1kcal
-- **運動**：任意のアドオン。時間か歩数で入力し、月のプールに加算
-- **体重**（`/weight`、ホームの「今朝の体重」）：1日1件・7日前まで。メインは7日平均（3件未満は参考値）
-- **月の割り直し**：2ヶ月目以降は、月初に前月の最後の7日間の平均からその月の1日の貯金を決めて `monthly_targets` に保存。画面は必ず `useMonthTargets`（`lib/monthTargets.ts`）から月の目標を取る
-- **進捗チャート**：7日平均の線・毎日の点・ゲートの目標ライン（SVG自作、`components/WeightChart.tsx`）
-- **ゲート達成・3%・5%**：7日平均で判定し、`goal_milestones` に保存して1回だけ出す
+- 食べたい・飲みたいを全力で肯定する
+- 「我慢」「禁止」「食べすぎ」という言葉は使わない。画面にマイナスの数字を出さない（減量は「5.25kg 減」「0.4kg減」のように書く）
+- チートは削らない。ためメシと運動で調整する
+- いつもの食事を続けるだけで体重はちゃんと減る。チートはその上乗せの楽しみ
+- 記録は1日数タップで終わる軽さを最優先。カロリーはざっくりの目安でよい
 
+## 仕様書
 
+- 仕様は `docs/v2-spec.md`。章が食い違うときは、後の章を優先する（現在の最新は12章 v2.2）
 
 ## プロジェクトの場所
 
-- **Next.js アプリのルート**: このディレクトリ（`meshitame/`）。`npm` コマンドはここで実行する
-- 親ディレクトリ（`../`）にも `app/` や `schema.sql` のコピーがあるが、**編集対象は常にこのリポジトリ内のファイル**
-
-
-
-## 技術スタック
-
-
-| 項目      | 内容                                |
-| ------- | --------------------------------- |
-| フレームワーク | Next.js 16（App Router）            |
-| UI      | React 19、Tailwind CSS 4           |
-| 認証・DB   | Supabase（`@supabase/supabase-js`） |
-| 言語      | TypeScript                        |
-| テスト     | Vitest                            |
-
-
-Next.js 16 の API・規約は学習データと異なる場合がある。`AGENTS.md` および `node_modules/next/dist/docs/` を参照すること。
+- Next.js アプリのルートはこのディレクトリ（`meshitame/`）。`npm` コマンドはここで実行する
+- 親ディレクトリ（`../`）にも `app/` や `schema.sql` があるが古いコピー。編集するのは常にこのディレクトリ内のファイル
 
 ## コマンド
 
 ```bash
 npm run dev      # 開発サーバー http://localhost:3000
 npm test         # Vitest（lib/calories.test.ts）
-npm run build    # 本番ビルド
-npm run lint     # ESLint
 npx tsc --noEmit # 型チェック
+npm run lint     # ESLint
+npm run build    # 本番ビルド
 ```
 
-報告の前に `npm test`・型チェック・`npm run build` を通すこと。
+## 仕組み（要約）
 
-## ディレクトリ構成
+### 毎日の目安
 
-```
-app/
-├── page.tsx              # ホーム（目安・3択記録・メシポゲージ・＋運動・＋チート・日付切り替え）
-├── setup/page.tsx        # 初回設定（目標とゲート）
-├── wants/page.tsx        # チートの月登録
-├── weight/page.tsx       # 体重（7日平均・進捗チャート・入力・記録の一覧）
-├── settings/page.tsx     # 設定（目標設定への入口）
-├── login/                # ログイン・パスワードリセット
-└── api/
-    └── ai-check/         # v1の体重チェックイン相談。今はどこからも呼ばない（フェーズ3でv2向けに見直す）
-components/
-├── BottomNav.tsx         # 今日 / チート / 体重 / 設定
-├── MealExamplesSheet.tsx
-├── CheatItemPicker.tsx
-├── ExerciseSheet.tsx
-├── WeightEntryCard.tsx   # 体重の入力（ホーム・/weight 共通）
-├── WeightChart.tsx       # 進捗チャート（SVG）
-├── MilestoneCards.tsx
-└── ServiceWorkerRegister.tsx # public/sw.js の登録（layout.tsx）
-lib/
-├── calories.ts           # v2の計算はすべてここ（純粋関数）
-├── calorieConstants.ts   # 数値の初期値はすべてここ
-├── calories.test.ts
-├── cheatItems.ts         # チートアイテム表
-├── mealExamples.ts       # メニュー例の表
-├── monthTargets.ts       # 月の目標の入口（useMonthTargets）。monthly_targets の読み書き
-├── milestones.ts         # ゲート達成・3%・5%（useMilestones）。goal_milestones の読み書き
-└── supabase.ts
-types/index.ts
-public/
-├── manifest.json         # PWA（名前・テーマ色・アイコン）
-├── sw.js                 # Service Worker。キャッシュは一切しない（fetch はネットワークに流すだけ）
-├── icon.svg              # アイコンの元（仮）。差し替えたら icon-192 / icon-512 / apple-touch-icon(180) の PNG を作り直す
-└── icon-192.png, icon-512.png, apple-touch-icon.png
-docs/v2-spec.md           # 仕様書
-migration_*.sql           # DB変更（Supabase SQL Editor で手動実行）
-```
+- 1日の目安 = max(基礎代謝, 必要量 − 減らすペース)
+- 減らすペース（`user_profiles.reduce_pace`）：keep 0 / slow 120 / normal 240 / hard 480 kcal/日。初期値 slow
+- 朝・昼・夜に割り振って「目安 ≒ ◯kcal」。「?」でメニュー例（`lib/mealExamples.ts`）
 
+### 記録の3択（朝・昼・夜）
 
+- 🐷 ためメシ：+150pt
+- 🍚 いつもの：0pt（記録しない日もこれ扱い）
+- 🔥 がっつり：チート扱いで目標 +300pt（貯まったptは減らさない）。置き換えチートが入っている食事では数えない
+- 過去7日までさかのぼって記録できる（未来は不可）
 
-## 実装の慣習
+### メシポ（目標は月、振り返りは週）
 
+- 目標 = その月のチートのコスト合計 ＋ がっつり×300
+- 貯まったpt = ためメシ×150 ＋ 運動pt（自動の積み立てはしない）
+- ゲージは月に1本。「貯まった ◯pt ／ 目標 ◯pt」、タップで内訳。ペースの目印 = 目標×経過日数÷月の日数
+- 目標を超えたら「あと◯pt分、チートを追加できる」。翌月には持ち越さない
+- 週（月〜日、日本時間）は振り返り用：ホームに「今週 +◯pt」、日曜と月曜に振り返りカード
 
+### チート
 
-### 計算
+- `lib/cheatItems.ts` のアイテム表（17ジャンル・約90個）から数量つきで複数選択。自由入力も可
+- 置き換え：コスト = 合計 − その食事の目安（下限0）／上乗せ：コスト = 合計
+- 日付指定と頻度ベース（週◯回）の両方で登録できる
 
-- 計算は `lib/calories.ts` に純粋関数で書き、テストを付ける。画面側で計算し直さない
-- 数値は `lib/calorieConstants.ts` に定数として置く。マジックナンバーを画面に書かない
-- 計算にAIを使わない
-- 日付は日本時間の `YYYY-MM-DD` で扱う（`formatDateJST` を使う）。計算は月単位（週の区切りは使わない）
+### 運動
 
+- ウォーキング5pt/分、ランニング10、筋トレ5、自転車7、スポーツ7、1000歩=35pt
 
+### 体重
 
-### DB
+- 毎朝記録（1日1件、同じ日は上書き。7日前まで記録・修正できる）。ホームの「今朝の体重」と体重タブから入力
+- メインは7日平均（その日を含む直近7日間にある記録の平均。3件未満は参考値）。前週比は「0.4kg減」「0.2kg増」「変わらず」
+- ゲート（長期の目標）は体重タブの進捗チャートとゲート達成、初回設定で使う。目安の計算には使わない
 
-- テーブルや列の変更は `migration_<内容>.sql` を新しく作る。`schema.sql` は直接変えない
-- 新しいテーブルには RLS（`auth.uid() = user_id`）と `authenticated` への grant を必ず付ける
-- 既存データを壊さない変更にする（列追加は null 可、制約の作り直しは既存値が通るか確認）
-- 主要テーブル（v2）：`user_profiles`、`goal_plans`（有効は1人1行）、`monthly_wants`、`meal_logs`、`exercise_logs`、`custom_cheat_items`、`weight_logs`（1人1日1件）、`monthly_targets`（goal_plan・月ごとに1行）、`goal_milestones`
-- v1のテーブル（`week_plans`、`plan_blocks`、`weekly_intentions` など）はv2では使わない。v1の画面・コードは削除済み。テーブルは残してある（消すかはv2が落ち着いてから判断）
+## 画面
 
+| 画面 | パス | 内容 |
+|---|---|---|
+| ログイン | /login | メール・パスワード認証 |
+| 初回設定 | /setup | 身長・体重・目標体重・期間・年齢・性別・活動量 → 上限チェック・ゲート・必要量と目安 |
+| 今日 | / | 今朝の体重・目安・記録の3択・メシポゲージ・＋運動・＋チート・日付切り替え・振り返り |
+| チート | /wants | 月のチートの登録・一覧・削除（がっつりの記録も表示） |
+| 体重 | /weight | 毎朝の体重の入力・7日平均・前週比・進捗チャート・記録の一覧 |
+| 設定 | /settings | 減らすペース・目標設定（/setup）とチート（/wants）への入口 |
 
+ボトムナビは4タブ：今日 / チート / 体重 / 設定
 
-### 認証
+## 技術スタック
 
-- クライアント: `lib/supabase.ts` の `supabase` を使用
-- 新規画面でも `supabase.auth.getUser()` でガードし、未ログインは `/login` へ
+- Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- Supabase（PostgreSQL + Auth、全テーブルRLS：自分の行だけ）
+- Vercel（meshitame.vercel.app）
+- テスト：vitest
 
+## コーディング方針
 
+- 計算はすべて `lib/calories.ts` の純粋関数（定数は `lib/calorieConstants.ts`）。画面では計算しない。計算関数にはテストを付ける
+- 減らすペースの読み書きは `lib/reducePace.ts` に集約
+- 計算・判定にAIは使わない
+- 日付は日本時間（`formatDateJST`）で判定
+- DB変更はマイグレーションSQLを別ファイルで用意（RLS・authenticated への grant も）。既存データを壊さない。何度実行しても大丈夫な書き方にする。DBの列名は旧名（want など）のままでよい
+- v1のテーブル・`monthly_targets`・`lib/monthTargets.ts` は使っていないが残してある
+- UI：ダークテーマ（bg-stone-950）、アクセントは amber-400、スマホファースト（max-w-md、pb-24）
+- Supabaseクライアントは `@/lib/supabase`、型は `@/types` から import
 
-### UI
+## 作業の進め方
 
-- ダークテーマ: `bg-stone-950`、`text-stone-100`。アクセント: `amber-400`
-- スマホファースト（`max-w-md`、ボトムナビ分の `pb-24`）
-- ユーザー向け文言は日本語。画面上の呼び名は「チート」「メシポ」「メシポゲージ」（「欲望」「貯金ゲージ」は使わない）
-- ページは原則 `'use client'`
-
-
-
-### AI（相談機能のみ）
-
-- サーバー側の API Route から呼ぶ。キーは `.env.local`、クライアントに載せない
-- レスポンスは JSON のみで返すようプロンプトで指定する
-
+- 始める前に、変更するファイル・新しく作るファイル・DB変更の一覧を出して確認を取る
+- テスト・型チェック・lint・build が通ってから報告する
+- コミット・プッシュは本人が行う

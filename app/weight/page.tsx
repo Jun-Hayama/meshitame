@@ -17,7 +17,7 @@ import {
   calcWeekOverWeek,
   calcWeightAverage,
   formatDateJST,
-  formatSignedKg,
+  formatWeightChange,
   formatMonthDayWeekday,
   getRecordableDateRange,
   isRecordableDate,
@@ -115,7 +115,7 @@ export default function WeightPage() {
                     <p className="text-sm mt-3">
                       <span className="text-stone-500 text-xs mr-1">前週比</span>
                       <span className={weekOverWeek.diffKg < -0.05 ? 'text-amber-400 font-bold' : 'text-stone-300 font-bold'}>
-                        {formatSignedKg(weekOverWeek.diffKg)}
+                        {formatWeightChange(weekOverWeek.diffKg)}
                       </span>
                       {weekOverWeek.diffKg > 0.05 && (
                         <span className="block text-stone-500 text-xs mt-1">水分などで動く範囲です。7日平均で見ていこう</span>

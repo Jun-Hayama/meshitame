@@ -39,7 +39,7 @@ export interface GatePlan {
 export interface DailySavingResult {
   savingKcal: number // 実際に使う1日の貯金
   uncappedKcal: number // 上限をかける前の値
-  capKcal: number // min(750, TDEE − 基礎代謝 − 150)
+  capKcal: number // min(750, TDEE − 基礎代謝)
   capped: boolean
 }
 
@@ -99,6 +99,31 @@ export interface CustomCheatItemRow {
 
 export type MealSlot = 'morning' | 'lunch' | 'dinner'
 export type MealChoice = 'light' | 'normal' | 'hearty'
+
+// 記録の3択の表示名（12-1）。DBの値（light / normal / hearty）は変えない
+export const MEAL_CHOICE_LABELS: Record<MealChoice, string> = {
+  light: 'ためメシ',
+  normal: 'いつもの',
+  hearty: 'がっつり',
+}
+
+export const MEAL_CHOICE_EMOJI: Record<MealChoice, string> = {
+  light: '🐷',
+  normal: '🍚',
+  hearty: '🔥',
+}
+
+// 減らすペース（12-3）。user_profiles.reduce_pace
+export type ReducePace = 'keep' | 'slow' | 'normal' | 'hard'
+
+export const REDUCE_PACE_LABELS: Record<ReducePace, string> = {
+  keep: 'キープ',
+  slow: 'ゆっくり',
+  normal: 'ふつう',
+  hard: 'しっかり',
+}
+
+export const REDUCE_PACE_ORDER: ReducePace[] = ['keep', 'slow', 'normal', 'hard']
 
 export interface MealLogRow {
   id: string
@@ -189,6 +214,14 @@ export interface ExerciseLogRow {
   created_at: string
 }
 
+// がっつりの記録1件をチートとして数えたもの（12-2。DBにチートの行は作らない）
+export interface HeartyCheatEntry {
+  mode: 'hearty'
+  date: string // YYYY-MM-DD
+  slot: MealSlot
+  costPt: number // 300
+}
+
 // その月のチート1件（頻度ベースはその月に入る回数をまとめて1件）
 export type MonthCheatEntry =
   | { mode: 'dated'; row: MonthlyWantRow; date: string; costPt: number; done: boolean }
@@ -201,16 +234,39 @@ export type MonthCheatEntry =
       costPt: number // costPerTimePt × timesInMonth
     }
 
+export type DatedCheatEntry = Extract<MonthCheatEntry, { mode: 'dated' }>
+
+// 目標に入るチート（登録したチート ＋ がっつり）
+export type GaugeCheatEntry = MonthCheatEntry | HeartyCheatEntry
+
+// 貯まったptの内訳（12-2・12-4）
+export interface EarnedBreakdown {
+  tamemeshiCount: number // ためメシの回数
+  tamemeshiPt: number // ためメシ × 150
+  exercisePt: number
+  totalPt: number
+}
+
+// 週の振り返り（12-5）
+export interface WeekSummary {
+  from: string // 月曜
+  to: string // 日曜
+  earned: EarnedBreakdown
+  cheats: (DatedCheatEntry | HeartyCheatEntry)[] // その週の日付指定のチートとがっつり（頻度ベースは週◯回で別に出す）
+  frequencyCheats: { row: MonthlyWantRow; timesPerWeek: number; costPt: number }[]
+  cheatPt: number
+  weightDiffKg: number | null // 日曜の7日平均 − 前の日曜の7日平均（記録がなければ null）
+}
+
 export interface MeshipoGauge {
-  targetPt: number // その月のチートのコスト合計
+  targetPt: number // その月のチートのコスト合計（がっつり含む）
   earnedPt: number // 今日までに貯まったpt
   pacePt: number // 今日までに貯まっていたい量 = 目標 × 経過日数 ÷ 月の日数
   onPace: boolean
   behindPt: number // ペースに追いつくまであと◯pt
   catchUpWalkingMinutes: number // 今日◯分歩くとペースに追いつく
   extraPt: number // 目標を超えた分（追加でチートできる量）
-  projectedPt: number // 見込み = 貯まったpt + 残り日数 × 150
-  lightMealsNeeded: number // 今月あと必要な軽め（0なら軽めなしでOK）
+  tamemeshiNeeded: number // 今月あと必要なためメシ = 切り上げ((目標 − 貯まった) ÷ 150)。0なら目標達成
   fillRatio: number // ゲージの塗り（0〜1）
   paceRatio: number // ペースの目印の位置（0〜1）
 }

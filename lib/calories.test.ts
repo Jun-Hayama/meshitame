@@ -30,7 +30,17 @@ import {
   sumMonthCheatCosts,
   getReplacedMealKeys,
   calcMonthEarnedPt,
+  calcMonthEarnedBreakdown,
   calcMeshipoGauge,
+  calcDailyIntakeFromPace,
+  calcPaceKgPerMonth,
+  expandHeartyCheats,
+  buildGaugeCheats,
+  calcEarnedBreakdown,
+  getWeekRange,
+  getReviewWeek,
+  calcWeekSummary,
+  describeWeekEarned,
   calcExercisePoints,
   addDaysToDateStr,
   getRecordableDateRange,
@@ -39,7 +49,7 @@ import {
   parseWeightInput,
   calcWeightAverage,
   calcWeekOverWeek,
-  formatSignedKg,
+  formatWeightChange,
   calcPlanMonthTargets,
   decideMonthTargets,
   getMonthStartAverageDate,
@@ -162,19 +172,19 @@ describe('1日の貯金の上限', () => {
     expect(r).toEqual({ savingKcal: 750, uncappedKcal: 960, capKcal: 750, capped: true })
   })
 
-  it('TDEE − 基礎代謝 − 150 で頭打ち（目安パターンが基礎代謝を下回らない）', () => {
-    // 活動少なめ：BMR 2109 / TDEE 2531 → 上限 272
+  it('TDEE − 基礎代謝 で頭打ち（目安が基礎代謝を下回らない。12-3で −150 は廃止）', () => {
+    // 活動少なめ：BMR 2109 / TDEE 2531 → 上限 422。月2kg = 480kcal/日 で上限に当たる
     const bmr = calcBaseMetabolism(104, 178, 40, 'male')
     const tdee = calcTDEE(bmr, 'low')
-    const r = calcDailySaving(1.75, 2026, 11, tdee, bmr)
-    expect(r.capKcal).toBe(tdee - bmr - 150)
+    const r = calcDailySaving(2, 2026, 11, tdee, bmr)
+    expect(r.capKcal).toBe(tdee - bmr)
     expect(r.savingKcal).toBe(r.capKcal)
     expect(r.capped).toBe(true)
-    expect(calcDailyIntakeTarget(tdee, r.savingKcal, bmr) - 150).toBe(bmr)
+    expect(calcDailyIntakeTarget(tdee, r.savingKcal, bmr)).toBe(bmr)
   })
 
-  it('TDEE − 基礎代謝が150未満なら貯金0', () => {
-    expect(calcDailySaving(1, 2026, 11, 2100, 2000).savingKcal).toBe(0)
+  it('TDEE = 基礎代謝なら貯金0', () => {
+    expect(calcDailySaving(1, 2026, 11, 2000, 2000).savingKcal).toBe(0)
   })
 
   it('31日の月は日割りが小さくなる', () => {
@@ -309,10 +319,24 @@ describe('日本時間の日付', () => {
 })
 
 describe('朝・昼・夜の目安', () => {
-  it('朝昼夜の合計は目安 − 150', () => {
+  it('朝昼夜の合計は1日の目安そのまま（12-3で −150 は廃止）', () => {
     const slots = calcMealSlotTargets(2000)
     expect(slots.map((s) => s.slot)).toEqual(['morning', 'lunch', 'dinner'])
-    expect(slots.reduce((sum, s) => sum + s.kcal, 0)).toBe(1850)
+    expect(slots.reduce((sum, s) => sum + s.kcal, 0)).toBe(2000)
+  })
+})
+
+describe('毎日の目安 = 必要量 − 減らすペース（12-3）', () => {
+  it('必要量2150・ふつう → 目安1910。基礎代謝1950なら目安1950', () => {
+    expect(calcDailyIntakeFromPace(2150, 1500, 'normal')).toBe(1910)
+    expect(calcDailyIntakeFromPace(2150, 1950, 'normal')).toBe(1950)
+  })
+
+  it('キープ 0 / ゆっくり −120 / ふつう −240 / しっかり −480（月0/0.5/1/2kg）', () => {
+    expect(['keep', 'slow', 'normal', 'hard'].map((p) => calcDailyIntakeFromPace(2150, 1500, p as 'keep'))).toEqual([
+      2150, 2030, 1910, 1670,
+    ])
+    expect(['slow', 'normal', 'hard'].map((p) => calcPaceKgPerMonth(p as 'slow'))).toEqual([0.5, 1, 2])
   })
 })
 
@@ -399,9 +423,9 @@ describe('チートを細かく登録する（10-3）', () => {
     expect(buildCheatLabel([beer, karaage])).toBe('ビール500ml×2＋唐揚げ')
   })
 
-  it('換算：750pt = 軽め5回 or ウォーキング150分', () => {
-    expect(convertCheatCost(750)).toEqual({ lightMeals: 5, walkingMinutes: 150 })
-    expect(convertCheatCost(117)).toEqual({ lightMeals: 1, walkingMinutes: 24 })
+  it('換算：750pt = ためメシ5回 or ウォーキング150分', () => {
+    expect(convertCheatCost(750)).toEqual({ tamemeshi: 5, walkingMinutes: 150 })
+    expect(convertCheatCost(117)).toEqual({ tamemeshi: 1, walkingMinutes: 24 })
   })
 
   it('登録済みの行：中身なしは WANT_COSTS、中身ありは置き換えの食事の目安で計算', () => {
@@ -501,17 +525,25 @@ describe('メシポゲージは月で1本（10-4）', () => {
     expect(calcMeshipoGauge({ targetPt: 3300, earnedPt: 1100, dayOfMonth: 10, daysInMonth: 30 }).onPace).toBe(true)
   })
 
-  it('貯まったpt = 経過日数×150 + 軽め+150 / がっつり−300 + 運動', () => {
-    const earned = calcMonthEarnedPt({
+  it('ためメシ3回＋ウォーキング30分 → 600pt（いつもの・がっつりは0pt）', () => {
+    const input = {
       year: 2026, month: 11, today: '2026-11-10',
       mealLogs: [
-        { log_date: '2026-11-02', slot: 'lunch', choice: 'light' },
-        { log_date: '2026-11-03', slot: 'dinner', choice: 'hearty' },
-        { log_date: '2026-11-04', slot: 'morning', choice: 'normal' },
+        { log_date: '2026-11-02', slot: 'lunch' as const, choice: 'light' as const },
+        { log_date: '2026-11-03', slot: 'morning' as const, choice: 'light' as const },
+        { log_date: '2026-11-05', slot: 'dinner' as const, choice: 'light' as const },
+        { log_date: '2026-11-04', slot: 'morning' as const, choice: 'normal' as const },
+        { log_date: '2026-11-06', slot: 'dinner' as const, choice: 'hearty' as const },
       ],
-      exerciseLogs: [],
-    })
-    expect(earned).toBe(10 * 150 + 150 - 300)
+      exerciseLogs: [{ log_date: '2026-11-07', points: calcExercisePoints({ type: 'walking', minutes: 30 }) }],
+    }
+    expect(calcMonthEarnedPt(input)).toBe(600)
+    expect(calcMonthEarnedBreakdown(input)).toEqual({ tamemeshiCount: 3, tamemeshiPt: 450, exercisePt: 150, totalPt: 600 })
+  })
+
+  it('記録なしで30日経過 → 貯まった 0pt（自動の積み立てはしない）', () => {
+    expect(calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-11-30', mealLogs: [], exerciseLogs: [] })).toBe(0)
+    expect(calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-12-05', mealLogs: [], exerciseLogs: [] })).toBe(0)
   })
 
   it('運動ptはどの日の分も同じ月のプールに入る（他の月の分は入らない）', () => {
@@ -526,18 +558,18 @@ describe('メシポゲージは月で1本（10-4）', () => {
       ],
     })
     const sameDay = calcMonthEarnedPt({ ...base, exerciseLogs: [{ log_date: '2026-11-10', points: 485 }] })
-    expect(spread).toBe(1500 + 485)
+    expect(spread).toBe(485)
     expect(spread).toBe(sameDay)
   })
 
-  it('夜を置き換えた日に夜の記録が「がっつり」で残っていても、−300されない', () => {
+  it('夜を置き換えた日に夜の記録が「ためメシ」で残っていても、+150されない', () => {
     const cheat = ramen700('2026-11-03')
-    const mealLogs = [{ log_date: '2026-11-03', slot: 'dinner' as const, choice: 'hearty' as const }]
+    const mealLogs = [{ log_date: '2026-11-03', slot: 'dinner' as const, choice: 'light' as const }]
     const base = { year: 2026, month: 11, today: '2026-11-10', mealLogs, exerciseLogs: [] }
-    expect(calcMonthEarnedPt({ ...base, replacedMealKeys: getReplacedMealKeys([cheat]) })).toBe(1500)
+    expect(calcMonthEarnedPt({ ...base, replacedMealKeys: getReplacedMealKeys([cheat]) })).toBe(0)
     // 置き換えのない食事（同じ日の昼）は数える
-    const lunch = [...mealLogs, { log_date: '2026-11-03', slot: 'lunch' as const, choice: 'hearty' as const }]
-    expect(calcMonthEarnedPt({ ...base, mealLogs: lunch, replacedMealKeys: getReplacedMealKeys([cheat]) })).toBe(1200)
+    const lunch = [...mealLogs, { log_date: '2026-11-03', slot: 'lunch' as const, choice: 'light' as const }]
+    expect(calcMonthEarnedPt({ ...base, mealLogs: lunch, replacedMealKeys: getReplacedMealKeys([cheat]) })).toBe(150)
   })
 
   it('上乗せ・頻度ベースは置き換えの対象にしない', () => {
@@ -555,14 +587,153 @@ describe('メシポゲージは月で1本（10-4）', () => {
     expect(calcMeshipoGauge({ targetPt: 1000, earnedPt: 900, dayOfMonth: 10, daysInMonth: 30 }).extraPt).toBe(0)
   })
 
-  it('軽めの必要回数：見込みで足りれば0（今月は軽めなしでOK）、足りなければ切り上げ', () => {
-    // 見込み = 1000 + 20日×150 = 4000
-    expect(calcMeshipoGauge({ targetPt: 3300, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 }).lightMealsNeeded).toBe(0)
-    expect(calcMeshipoGauge({ targetPt: 4000, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 }).lightMealsNeeded).toBe(0)
-    expect(calcMeshipoGauge({ targetPt: 4001, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 }).lightMealsNeeded).toBe(1)
-    expect(calcMeshipoGauge({ targetPt: 4450, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 }).lightMealsNeeded).toBe(3)
+  it('必要なためメシ = 切り上げ((目標 − 貯まった) ÷ 150)。0以下なら目標達成', () => {
+    expect(calcMeshipoGauge({ targetPt: 1000, earnedPt: 400, dayOfMonth: 10, daysInMonth: 30 }).tamemeshiNeeded).toBe(4)
+    expect(calcMeshipoGauge({ targetPt: 1000, earnedPt: 850, dayOfMonth: 10, daysInMonth: 30 }).tamemeshiNeeded).toBe(1)
+    expect(calcMeshipoGauge({ targetPt: 1000, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 }).tamemeshiNeeded).toBe(0)
+    expect(calcMeshipoGauge({ targetPt: 1000, earnedPt: 1300, dayOfMonth: 10, daysInMonth: 30 }).tamemeshiNeeded).toBe(0)
     // 目標0（チートなし）でも0回
-    expect(calcMeshipoGauge({ targetPt: 0, earnedPt: 0, dayOfMonth: 1, daysInMonth: 30 }).lightMealsNeeded).toBe(0)
+    expect(calcMeshipoGauge({ targetPt: 0, earnedPt: 0, dayOfMonth: 1, daysInMonth: 30 }).tamemeshiNeeded).toBe(0)
+  })
+})
+
+describe('がっつりはチートとして目標に足す（12-2）', () => {
+  const slots = [
+    { slot: 'morning' as const, kcal: 500 },
+    { slot: 'lunch' as const, kcal: 700 },
+    { slot: 'dinner' as const, kcal: 1083 },
+  ]
+  const ramen: MonthlyWantRow = {
+    id: 'r1',
+    user_id: 'u',
+    kind: 'ramen',
+    scheduled_date: '2026-11-06',
+    times_per_week: null,
+    label: null,
+    is_active: true,
+    created_at: '2026-11-01T00:00:00Z',
+    cheat_type: 'replace',
+    replace_slot: 'dinner',
+    items: null,
+    total_kcal: 1783, // 夜の目安1083の代わり → 700pt
+  }
+  const gaugeFor = (mealLogs: { log_date: string; slot: 'morning' | 'lunch' | 'dinner'; choice: 'light' | 'normal' | 'hearty' }[]) => {
+    const replaced = getReplacedMealKeys([ramen])
+    const cheats = buildGaugeCheats(expandCheatsForMonth([ramen], 2026, 11, slots, '2026-11-10'), mealLogs, 2026, 11, replaced)
+    return {
+      cheats,
+      targetPt: sumMonthCheatCosts(cheats),
+      earnedPt: calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-11-10', mealLogs, exerciseLogs: [], replacedMealKeys: replaced }),
+    }
+  }
+
+  it('がっつり1回 → 目標 +300、貯まったは変化なし。いつものに変えると目標が元に戻る', () => {
+    const before = gaugeFor([])
+    expect(before.targetPt).toBe(700)
+
+    const hearty = gaugeFor([{ log_date: '2026-11-09', slot: 'dinner', choice: 'hearty' }])
+    expect(hearty.targetPt).toBe(1000)
+    expect(hearty.earnedPt).toBe(before.earnedPt)
+    expect(hearty.cheats.at(-1)).toEqual({ mode: 'hearty', date: '2026-11-09', slot: 'dinner', costPt: 300 })
+
+    const back = gaugeFor([{ log_date: '2026-11-09', slot: 'dinner', choice: 'normal' }])
+    expect(back.targetPt).toBe(700)
+    expect(back.earnedPt).toBe(before.earnedPt)
+  })
+
+  it('夜を置き換えたチートの日に夜のがっつり記録 → 目標は置き換えチートのコストだけ（+300されない）', () => {
+    const g = gaugeFor([{ log_date: '2026-11-06', slot: 'dinner', choice: 'hearty' }])
+    expect(g.targetPt).toBe(700)
+    expect(g.cheats.filter((e) => e.mode === 'hearty')).toHaveLength(0)
+    // 同じ日の昼のがっつりは数える
+    expect(gaugeFor([{ log_date: '2026-11-06', slot: 'lunch', choice: 'hearty' }]).targetPt).toBe(1000)
+  })
+
+  it('がっつりは日付・食事の順に並び、範囲外の日は入らない', () => {
+    const rows = expandHeartyCheats(
+      [
+        { log_date: '2026-11-09', slot: 'dinner', choice: 'hearty' },
+        { log_date: '2026-11-09', slot: 'morning', choice: 'hearty' },
+        { log_date: '2026-11-02', slot: 'lunch', choice: 'hearty' },
+        { log_date: '2026-10-31', slot: 'lunch', choice: 'hearty' },
+        { log_date: '2026-11-03', slot: 'lunch', choice: 'light' },
+      ],
+      '2026-11-01',
+      '2026-11-30'
+    )
+    expect(rows.map((r) => `${r.date}:${r.slot}`)).toEqual(['2026-11-02:lunch', '2026-11-09:morning', '2026-11-09:dinner'])
+  })
+})
+
+describe('週の振り返り（12-5）', () => {
+  // 2026-11-09 は月曜、2026-11-15 は日曜。2026-11-30 は月曜（週は 11/30〜12/6）
+  it('週は月曜〜日曜で区切る', () => {
+    expect(getWeekRange('2026-11-09')).toEqual({ from: '2026-11-09', to: '2026-11-15' })
+    expect(getWeekRange('2026-11-12')).toEqual({ from: '2026-11-09', to: '2026-11-15' })
+    expect(getWeekRange('2026-11-15')).toEqual({ from: '2026-11-09', to: '2026-11-15' })
+    expect(getWeekRange('2026-11-16')).toEqual({ from: '2026-11-16', to: '2026-11-22' })
+  })
+
+  it('月をまたぐ週（11/30〜12/6）・年をまたぐ週（12/28〜1/3）', () => {
+    expect(getWeekRange('2026-12-03')).toEqual({ from: '2026-11-30', to: '2026-12-06' })
+    expect(getWeekRange('2027-01-01')).toEqual({ from: '2026-12-28', to: '2027-01-03' })
+  })
+
+  it('振り返りカードは日曜（その週）と次の月曜（前の週）だけ', () => {
+    expect(getReviewWeek('2026-11-15')).toEqual({ from: '2026-11-09', to: '2026-11-15' })
+    expect(getReviewWeek('2026-11-16')).toEqual({ from: '2026-11-09', to: '2026-11-15' })
+    expect(getReviewWeek('2026-11-14')).toBeNull()
+    expect(getReviewWeek('2026-11-17')).toBeNull()
+  })
+
+  it('月をまたぐ週も日付で集計する（月のゲージとは別）', () => {
+    const mealLogs = [
+      { log_date: '2026-11-29', slot: 'lunch' as const, choice: 'light' as const }, // 前の週
+      { log_date: '2026-11-30', slot: 'lunch' as const, choice: 'light' as const },
+      { log_date: '2026-12-01', slot: 'dinner' as const, choice: 'light' as const },
+      { log_date: '2026-12-02', slot: 'dinner' as const, choice: 'hearty' as const },
+      { log_date: '2026-12-07', slot: 'dinner' as const, choice: 'light' as const }, // 次の週
+    ]
+    const exerciseLogs = [
+      { log_date: '2026-11-30', points: 150 },
+      { log_date: '2026-12-06', points: 150 },
+    ]
+    const banshaku: MonthlyWantRow = {
+      id: 'b1', user_id: 'u', kind: 'evening_drink', scheduled_date: '2026-12-05', times_per_week: null,
+      label: null, is_active: true, created_at: '2026-11-01T00:00:00Z',
+      cheat_type: 'addon', replace_slot: null, items: null, total_kcal: 500,
+    }
+    const week = calcWeekSummary({
+      from: '2026-11-30', mealLogs, exerciseLogs, wants: [banshaku], slotTargets: [], weightLogs: [],
+    })
+    expect(week.to).toBe('2026-12-06')
+    expect(week.earned).toEqual({ tamemeshiCount: 2, tamemeshiPt: 300, exercisePt: 300, totalPt: 600 })
+    expect(week.cheats.map((e) => (e.mode === 'hearty' ? `🔥${e.date}` : `★${e.date}`))).toEqual(['🔥2026-12-02', '★2026-12-05'])
+    expect(week.cheatPt).toBe(800)
+    expect(week.weightDiffKg).toBeNull()
+
+    // 同じ記録でも月のゲージは月で区切る
+    expect(calcEarnedBreakdown({ from: '2026-11-01', to: '2026-11-30', mealLogs, exerciseLogs }).totalPt).toBe(450)
+  })
+
+  it('体重の記録があれば前週との差（日曜の7日平均 − 前の日曜の7日平均）', () => {
+    const weightLogs = [
+      { measured_at: '2026-11-03', weight_kg: 100.4 },
+      { measured_at: '2026-11-05', weight_kg: 100.2 },
+      { measured_at: '2026-11-07', weight_kg: 100.0 },
+      { measured_at: '2026-11-10', weight_kg: 99.9 },
+      { measured_at: '2026-11-12', weight_kg: 99.7 },
+      { measured_at: '2026-11-14', weight_kg: 99.5 },
+    ]
+    const week = calcWeekSummary({ from: '2026-11-09', mealLogs: [], exerciseLogs: [], wants: [], slotTargets: [], weightLogs })
+    expect(week.weightDiffKg).toBeCloseTo(99.7 - 100.2)
+  })
+
+  it('言葉はポジティブに：600pt → ワイン1本ぶん', () => {
+    expect(describeWeekEarned(600)).toBe('今週は+600pt！ワイン1本ぶん貯まりました🍷')
+    expect(describeWeekEarned(150)).toBe('今週は+150pt！ビール1本ぶん貯まりました🍺')
+    expect(describeWeekEarned(100)).toBe('今週は+100pt！コツコツ貯まっています')
+    expect(describeWeekEarned(0)).not.toMatch(/[−-]\d/)
   })
 })
 
@@ -623,13 +794,9 @@ describe('過去の日の記録（10-7）', () => {
     ]
     const exerciseLogs = [{ log_date: '2026-10-31', points: 150 }]
     const nov = calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-11-03', mealLogs, exerciseLogs })
-    expect(nov).toBe(3 * 150 + 150)
+    expect(nov).toBe(150)
     const oct = calcMonthEarnedPt({ year: 2026, month: 10, today: '2026-11-03', mealLogs, exerciseLogs })
-    expect(oct).toBe(31 * 150 + 150 + 150)
-  })
-
-  it('何も記録しない日は目安どおり（経過日数×150だけ貯まる）', () => {
-    expect(calcMonthEarnedPt({ year: 2026, month: 11, today: '2026-11-08', mealLogs: [], exerciseLogs: [] })).toBe(1200)
+    expect(oct).toBe(150 + 150)
   })
 })
 
@@ -698,17 +865,19 @@ describe('calcWeekOverWeek（11-2）', () => {
   })
 })
 
-describe('formatSignedKg', () => {
-  it('0.1kg単位で符号つき。0は ±0.0kg', () => {
-    expect(formatSignedKg(-0.44)).toBe('−0.4kg')
-    expect(formatSignedKg(0.25)).toBe('+0.3kg')
-    expect(formatSignedKg(-0.04)).toBe('±0.0kg')
+describe('formatWeightChange', () => {
+  it('0.1kg単位で、記号を使わずに書く', () => {
+    expect(formatWeightChange(-0.44)).toBe('0.4kg減')
+    expect(formatWeightChange(0.2)).toBe('0.2kg増')
+    expect(formatWeightChange(0.25)).toBe('0.3kg増')
+    expect(formatWeightChange(-0.04)).toBe('変わらず')
+    expect(formatWeightChange(-1.26)).not.toMatch(/[−\-+±]/)
   })
 })
 
 describe('月の割り直し（11-3）', () => {
   // 104kg・12ヶ月で15kg → ゲート1 −5.25kg（98.75kg）、ゲート2 −4.5kg（94.25kg）…
-  // 上限 = min(750, 2800 − 2000 − 150) = 650kcal
+  // 上限 = min(750, 2800 − 2000) = 750kcal
   const plan = {
     start_date: '2026-11-08',
     period_months: 12,
@@ -769,13 +938,13 @@ describe('月の割り直し（11-3）', () => {
   })
 
   it('遅れて capped：上限で止め、届かない見込みkgを出す', () => {
-    // ゲート1の最終月に104kgのまま → 5.25kg ÷ 1ヶ月 → 1219kcal/日 > 上限650
+    // ゲート1の最終月に104kgのまま → 5.25kg ÷ 1ヶ月 → 1219kcal/日 > 上限750
     const t = decideMonthTargets(plan, 2027, 1, avg(104))
     expect(t.dailySaving.capped).toBe(true)
-    expect(t.dailySaving.savingKcal).toBe(650)
+    expect(t.dailySaving.savingKcal).toBe(750)
     expect(t.dailySaving.uncappedKcal).toBe(1219)
-    // （1219 − 650）× 31日 × 1ヶ月 ÷ 7200
-    expect(t.shortfallKg).toBeCloseTo((569 * 31) / 7200)
+    // （1219 − 750）× 31日 × 1ヶ月 ÷ 7200
+    expect(t.shortfallKg).toBeCloseTo((469 * 31) / 7200)
   })
 
   it('月初の7日平均が3件未満なら計画どおり', () => {
@@ -917,6 +1086,11 @@ describe('ゲート達成・3%・5%（11-5）', () => {
 
   it('ゲートの終わりの目標体重以下でゲート達成。5%も同時に', () => {
     expect(kinds(detectNewMilestones(plan, avg(98.75), new Set(['loss3'])))).toEqual(['gate1', 'loss5'])
+  })
+
+  it('ゲート達成の一言は記号を使わない：「開始から 5.3kg 減った」', () => {
+    const [gate] = detectNewMilestones(plan, avg(98.75), new Set(['loss3', 'loss5']))
+    expect(gate.message).toBe('開始から 5.3kg 減った。この調子でいこう')
   })
 
   it('出したものは二度出さない', () => {
