@@ -37,8 +37,25 @@ import {
   ZeroCalEntry,
   ZeroCalStatus,
   GaugeMarker,
+  RewardPick,
+  LogDay,
+  LogEntry,
+  LogFilter,
+  MealLogRow,
+  ExerciseLogRow,
+  CheatChartPeriod,
+  CheatEvent,
+  CheatChartBar,
+  CheatWeightPoint,
+  CheatWeightChartData,
 } from '@/types'
-import { WANT_KIND_EMOJI, WANT_KIND_LABELS, MEAL_CHOICE_EMOJI, MEAL_CHOICE_LABELS } from '@/types'
+import {
+  WANT_KIND_EMOJI,
+  WANT_KIND_LABELS,
+  MEAL_CHOICE_EMOJI,
+  MEAL_CHOICE_LABELS,
+  EXERCISE_TYPE_LABELS,
+} from '@/types'
 import {
   KCAL_PER_KG,
   BMI_STANDARD,
@@ -67,7 +84,12 @@ import {
   HEALTH_MILESTONES,
   ZERO_CAL_HEADLINE_MAX,
   GAUGE_MARKER_MIN_GAP,
+  REWARD_MIN_KCAL,
+  LOG_DAYS,
+  CHART_WEIGHT_HALF_RANGE_KG,
+  CHART_WEIGHT_EXPAND_PAD_KG,
 } from '@/lib/calorieConstants'
+import { REWARD_ITEMS, type RewardItem } from '@/lib/rewardItems'
 import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
   MEAL_EXAMPLES,
@@ -680,7 +702,7 @@ export function sortCheatItemsByUsage(
     .map((x) => x.item)
 }
 
-// --- 10-4. メシポゲージは「月で1本」 ---
+// --- 10-4. ゲージは「月で1本」 ---
 
 function monthPrefix(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, '0')}`
@@ -990,6 +1012,7 @@ export function calcZeroCalStatus(ordered: GaugeCheatEntry[], earnedPt: number):
       ? { entry: nextEntry.entry, remainingPt, tamemeshiNeeded: Math.ceil(remainingPt / TAMEMESHI_PT) }
       : null,
     extraPt: nextEntry ? 0 : earned - totalPt,
+    scalePt: Math.max(totalPt, earned),
   }
 }
 
@@ -1016,12 +1039,13 @@ export function describeZeroCalHeadline(status: ZeroCalStatus): string {
   return `${names}、実質0kcalで ごちそうさまでした`
 }
 
-// ゲージのアイコン。位置 = 累計コスト ÷ 合計。前のアイコンとの間が minGap 未満なら1つにまとめる（絵文字は最初の1件）
+// ゲージのアイコン。位置 = 累計コスト ÷ 目盛りの最大（max(合計, 貯まったpt)。14.2）
+// 前のアイコンとの間が minGap 未満なら1つにまとめる（絵文字は最初の1件）
 export function buildGaugeMarkers(status: ZeroCalStatus, minGap = GAUGE_MARKER_MIN_GAP): GaugeMarker[] {
-  if (status.totalPt <= 0) return []
+  if (status.totalPt <= 0 || status.scalePt <= 0) return []
   const markers: GaugeMarker[] = []
   for (const e of status.entries) {
-    const ratio = e.cumulativePt / status.totalPt
+    const ratio = e.cumulativePt / status.scalePt
     const last = markers[markers.length - 1]
     if (last && ratio - last.ratio < minGap) {
       last.ratio = ratio
@@ -1032,6 +1056,256 @@ export function buildGaugeMarkers(status: ZeroCalStatus, minGap = GAUGE_MARKER_M
     markers.push({ ratio, emoji: getGaugeCheatEmoji(e.entry), count: 1, zeroed: e.zeroed })
   }
   return markers
+}
+
+// --- 14.2. ごほうび（目標を超えて貯めた分。今月限り） ---
+
+export function calcRewardKcal(earnedPt: number, targetPt: number): number {
+  return Math.max(0, earnedPt - targetPt)
+}
+
+// ごほうび以下でいちばん kcal が大きい候補。150kcal未満、または届く候補がなければ null
+export function pickRewardItem(rewardKcal: number, items: RewardItem[] = REWARD_ITEMS): RewardPick | null {
+  if (rewardKcal < REWARD_MIN_KCAL) return null
+  let best: RewardPick | null = null
+  for (const item of items) {
+    const kcal = calcMealExampleKcal(item.items)
+    if (kcal <= rewardKcal && (!best || kcal > best.kcal)) best = { name: item.name, kcal }
+  }
+  return best
+}
+
+// --- 14.3. ログ ---
+
+// 「≒ ビール◯杯ぶん」：生ビール中ジョッキの kcal で割って切り捨て（1杯未満は0 → 画面では出さない）
+export function calcBeerEquivalent(pt: number): number {
+  return Math.max(0, Math.floor(pt / FOOD_ITEM_MAP.draft_beer.kcal))
+}
+
+// うごための合計時間（分）。歩数で記録したものは含めない
+export function calcExerciseMinutes(
+  exerciseLogs: Pick<ExerciseLogRow, 'log_date' | 'exercise_type' | 'minutes'>[],
+  from: string,
+  to: string
+): number {
+  return exerciseLogs
+    .filter((l) => l.log_date >= from && l.log_date <= to && l.exercise_type !== 'steps')
+    .reduce((sum, l) => sum + (l.minutes ?? 0), 0)
+}
+
+// 「ウォーキング30分」／「8,000歩」
+export function formatExerciseLog(log: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps'>): string {
+  if (log.exercise_type === 'steps') return `${(log.steps ?? 0).toLocaleString('ja-JP')}歩`
+  return `${EXERCISE_TYPE_LABELS[log.exercise_type]}${log.minutes ?? 0}分`
+}
+
+// 過去14日分（今日を含む）の一覧。新しい日が上。メシため（light）とうごためだけ。記録がない日は出さない
+export function buildLogDays(input: {
+  today: string
+  mealLogs: MealLogRow[]
+  exerciseLogs: ExerciseLogRow[]
+  filter: LogFilter
+  replacedMealKeys?: Set<string>
+}): LogDay[] {
+  const { today, mealLogs, exerciseLogs, filter, replacedMealKeys } = input
+  const from = addDaysToDateStr(today, -(LOG_DAYS - 1))
+  const days: LogDay[] = []
+  for (let d = today; d >= from; d = addDaysToDateStr(d, -1)) {
+    const meals: LogEntry[] =
+      filter === 'exercise'
+        ? []
+        : mealLogs
+            .filter((l) => l.log_date === d && l.choice === 'light')
+            .sort((a, b) => SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot))
+            .map((log) => ({
+              kind: 'meal',
+              log,
+              pt: replacedMealKeys?.has(`${log.log_date}:${log.slot}`) ? 0 : TAMEMESHI_PT,
+            }))
+    const exercises: LogEntry[] =
+      filter === 'meal'
+        ? []
+        : exerciseLogs
+            .filter((l) => l.log_date === d)
+            .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+            .map((log) => ({ kind: 'exercise', log, pt: log.points }))
+    const entries = [...meals, ...exercises]
+    if (entries.length > 0) days.push({ date: d, entries })
+  }
+  return days
+}
+
+// --- 14.4. 体重チャート：チートの累計（棒）＋体重（線） ---
+
+// 食べたチート：日付のある登録チートとがっつりを、その日付に。今日より先は数えない
+export function buildCheatEvents(input: {
+  wants: MonthlyWantRow[]
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+  from: string
+  today: string
+}): CheatEvent[] {
+  const { wants, mealLogs, slotTargets, from, today } = input
+  const active = wants.filter((r) => r.is_active !== false)
+  const dated: CheatEvent[] = active
+    .filter((r) => r.scheduled_date != null && r.scheduled_date >= from && r.scheduled_date <= today)
+    .map((row) => {
+      const entry: GaugeCheatEntry = {
+        mode: 'dated',
+        row,
+        date: row.scheduled_date as string,
+        costPt: getMonthlyWantRowCost(row, slotTargets),
+        done: true,
+      }
+      return { date: entry.date, costPt: entry.costPt, emoji: getGaugeCheatEmoji(entry), name: getGaugeCheatName(entry) }
+    })
+  const hearty: CheatEvent[] = expandHeartyCheats(mealLogs, from, today, getReplacedMealKeys(active)).map((e) => ({
+    date: e.date,
+    costPt: e.costPt,
+    emoji: getGaugeCheatEmoji(e),
+    name: getGaugeCheatName(e),
+  }))
+  return [...dated, ...hearty].sort((a, b) => a.date.localeCompare(b.date))
+}
+
+// 週◯回のチート（見出しの累計にだけ入れる）。登録した月から今月まで
+// 過去の月は月の回数をまるごと、今月は「月の回数 × 今日までの日数 ÷ 月の日数」の切り捨て
+export function calcFrequencyCheatKcal(input: {
+  wants: MonthlyWantRow[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+  from: string
+  today: string
+}): number {
+  const { wants, slotTargets, from, today } = input
+  const monthIndex = (date: string) => Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7)) - 1
+  const todayIndex = monthIndex(today)
+  const dayOfMonth = Number(today.slice(8, 10))
+  let total = 0
+  for (const row of wants) {
+    if (row.is_active === false || row.scheduled_date != null || (row.times_per_week ?? 0) <= 0) continue
+    const cost = getMonthlyWantRowCost(row, slotTargets)
+    const created = row.created_at ? formatDateJST(new Date(row.created_at)) : from
+    const start = Math.max(monthIndex(from), monthIndex(created))
+    for (let i = start; i <= todayIndex; i++) {
+      const year = Math.floor(i / 12)
+      const month = (i % 12) + 1
+      const times = countFrequencyInMonth(row.times_per_week as number, year, month)
+      const counted = i === todayIndex ? Math.floor((times * dayOfMonth) / getDaysInMonth(year, month)) : times
+      total += counted * cost
+    }
+  }
+  return total
+}
+
+// 体重の縦の範囲：中心 ± 2kg。外れる値があるときだけ、収まるように広げる
+export function calcWeightYRange(
+  values: number[],
+  centerKg: number,
+  halfRangeKg = CHART_WEIGHT_HALF_RANGE_KG,
+  padKg = CHART_WEIGHT_EXPAND_PAD_KG
+): { yMin: number; yMax: number } {
+  let yMin = centerKg - halfRangeKg
+  let yMax = centerKg + halfRangeKg
+  if (values.length > 0) {
+    const lo = Math.min(...values)
+    const hi = Math.max(...values)
+    if (lo < yMin) yMin = lo - padKg
+    if (hi > yMax) yMax = hi + padKg
+  }
+  return { yMin, yMax }
+}
+
+// 期間：今月 = 月の初日〜末日、はじめてから = 最初に体重を記録した日〜今日
+export function getCheatChartRange(
+  period: CheatChartPeriod,
+  today: string,
+  firstWeightDate: string | null
+): { from: string; to: string } {
+  if (period === 'month') return getMonthDateRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)))
+  return { from: firstWeightDate && firstWeightDate < today ? firstWeightDate : today, to: today }
+}
+
+export function buildCheatWeightChart(input: {
+  period: CheatChartPeriod
+  today: string
+  weightLogs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[]
+  wants: MonthlyWantRow[]
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+}): CheatWeightChartData {
+  const { period, today, weightLogs, wants, mealLogs, slotTargets } = input
+  const firstWeightDate = weightLogs.reduce<string | null>(
+    (min, l) => (min === null || l.measured_at < min ? l.measured_at : min),
+    null
+  )
+  const { from, to } = getCheatChartRange(period, today, firstWeightDate)
+
+  // 棒の区切り：今月は1日ずつ、はじめてからは月曜〜日曜の週ごと（両端は期間で切る）
+  const buckets: { from: string; to: string }[] = []
+  if (period === 'month') {
+    for (let d = from; d <= to; d = addDaysToDateStr(d, 1)) buckets.push({ from: d, to: d })
+  } else {
+    for (let w = getWeekRange(from).from; w <= to; w = addDaysToDateStr(w, 7)) {
+      const end = addDaysToDateStr(w, 6)
+      buckets.push({ from: w < from ? from : w, to: end > to ? to : end })
+    }
+  }
+
+  const events = buildCheatEvents({ wants, mealLogs, slotTargets, from, today })
+  let cumulative = 0
+  const bars: CheatChartBar[] = buckets.map((b) => {
+    const inBucket = events.filter((e) => e.date >= b.from && e.date <= b.to)
+    if (b.from > today) return { ...b, cumulativeKcal: null, events: [] }
+    cumulative += inBucket.reduce((sum, e) => sum + e.costPt, 0)
+    return { ...b, cumulativeKcal: cumulative, events: inBucket }
+  })
+
+  // 体重：今月は毎日の点とならした線（7日平均）、はじめてからは週の平均
+  const weightPoints: CheatWeightPoint[] = []
+  const weightSegments: CheatWeightPoint[][] = []
+  let segment: CheatWeightPoint[] = []
+  const closeSegment = () => {
+    if (segment.length) weightSegments.push(segment)
+    segment = []
+  }
+  bars.forEach((b, index) => {
+    if (b.from > today) return
+    const until = b.to < today ? b.to : today
+    const inBucket = weightLogs.filter((l) => l.measured_at >= b.from && l.measured_at <= until)
+    if (period === 'month') {
+      for (const l of inBucket) weightPoints.push({ index, kg: Number(l.weight_kg) })
+      const { avgKg } = calcWeightAverage(weightLogs, b.from)
+      if (avgKg === null) closeSegment()
+      else segment.push({ index, kg: avgKg })
+    } else if (inBucket.length === 0) {
+      closeSegment()
+    } else {
+      const kg = inBucket.reduce((sum, l) => sum + Number(l.weight_kg), 0) / inBucket.length
+      weightPoints.push({ index, kg })
+      segment.push({ index, kg })
+    }
+  })
+  closeSegment()
+
+  const center = weightSegments[0]?.[0]?.kg ?? weightPoints[0]?.kg ?? null
+  const range =
+    center === null
+      ? { yMin: null, yMax: null }
+      : calcWeightYRange([...weightPoints, ...weightSegments.flat()].map((p) => p.kg), center)
+
+  return {
+    period,
+    from,
+    to,
+    bars,
+    maxKcal: cumulative,
+    weightPoints,
+    weightSegments,
+    yMin: range.yMin,
+    yMax: range.yMax,
+    totalKcal: cumulative + calcFrequencyCheatKcal({ wants, slotTargets, from, today }),
+    weightChangeKg: calcWeightChangeInRange(weightLogs, from, today),
+  }
 }
 
 // --- 10-5. 運動の記録 ---
@@ -1118,22 +1392,21 @@ export function formatWeightChange(diffKg: number): string {
 
 // --- 11-4. 進捗チャート ---
 
-// --- 13.4. 月初めからの体重の変化 ---
-// 基準 = その月で最初に体重を記録した日から7日間の記録の平均（3件以上）
+// --- 13.4・14.4. 期間の体重の変化 ---
+// 基準 = 期間の中で最初に体重を記録した日から7日間の記録の平均（3件以上）
 // いま = 今日までの直近7日間の記録の平均（3件以上）。基準の期間と重ならないこと
 // 条件が揃わないときは null
-export function calcMonthWeightChange(logs: WeightPoint[], today: string): number | null {
-  const prefix = today.slice(0, 7)
-  const inMonth = logs
-    .filter((l) => l.measured_at.startsWith(prefix) && l.measured_at <= today)
+export function calcWeightChangeInRange(logs: WeightPoint[], from: string, today: string): number | null {
+  const inRange = logs
+    .filter((l) => l.measured_at >= from && l.measured_at <= today)
     .sort((a, b) => a.measured_at.localeCompare(b.measured_at))
-  if (inMonth.length === 0) return null
-  const baseFrom = inMonth[0].measured_at
+  if (inRange.length === 0) return null
+  const baseFrom = inRange[0].measured_at
   const baseTo = addDaysToDateStr(baseFrom, WEIGHT_AVG_DAYS - 1)
   const nowFrom = addDaysToDateStr(today, -(WEIGHT_AVG_DAYS - 1))
   if (nowFrom <= baseTo) return null
   const avg = (from: string, to: string) => {
-    const xs = inMonth.filter((l) => l.measured_at >= from && l.measured_at <= to)
+    const xs = inRange.filter((l) => l.measured_at >= from && l.measured_at <= to)
     return xs.length < WEIGHT_AVG_MIN_COUNT ? null : xs.reduce((sum, l) => sum + Number(l.weight_kg), 0) / xs.length
   }
   const base = avg(baseFrom, baseTo)
@@ -1142,10 +1415,24 @@ export function calcMonthWeightChange(logs: WeightPoint[], today: string): numbe
   return Math.round((now - base) * 1000) / 1000
 }
 
+// 月初めからの体重の変化（13.4）
+export function calcMonthWeightChange(logs: WeightPoint[], today: string): number | null {
+  return calcWeightChangeInRange(logs, `${today.slice(0, 7)}-01`, today)
+}
+
+// 0.1kg未満は「変わらず」、それ以外は「0.4kg減」「0.2kg増」
+function describeWeightChange(diffKg: number): string {
+  return Math.abs(diffKg) < 0.1 ? '変わらず' : formatWeightChange(diffKg)
+}
+
+// 体重チャートの右下（14.4）：「体重 1.2kg減」／「体重 変わらず」／「体重 0.2kg増」
+export function describeWeightChangeShort(diffKg: number): string {
+  return `体重 ${describeWeightChange(diffKg)}`
+}
+
 // 「これだけ食べて、月初めから0.4kg減」／「変わらず」（0.1kg未満）／「0.2kg増」
 export function describeMonthWeightChange(diffKg: number): string {
-  const change = Math.abs(diffKg) < 0.1 ? '変わらず' : formatWeightChange(diffKg)
-  return `これだけ食べて、月初めから${change}`
+  return `これだけ食べて、月初めから${describeWeightChange(diffKg)}`
 }
 
 // a から b まで何日か（b − a）

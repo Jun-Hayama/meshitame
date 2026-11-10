@@ -180,7 +180,7 @@ export interface CurrentMonthTargets {
   dailyIntakeKcal: number
 }
 
-// ===== v2.1 メシポゲージ（月で1本）・運動 =====
+// ===== v2.1 ゲージ（月で1本）・運動 =====
 
 export type ExerciseType = 'walking' | 'running' | 'weights' | 'cycling' | 'sports' | 'steps'
 
@@ -201,6 +201,9 @@ export const EXERCISE_TYPE_EMOJI: Record<ExerciseType, string> = {
   sports: '⚽',
   steps: '👟',
 }
+
+// ポイントの表示名（14.1）。数字の単位は pt のまま。内部キー（meshipo など）は変えない
+export const POINT_LABEL = 'チーぽ'
 
 // 運動の表示名（13.1）。テーブル名・型名（exercise）は変えない
 export const EXERCISE_LABEL = 'うごため'
@@ -292,6 +295,13 @@ export interface ZeroCalStatus {
   zeroedCount: number
   next: { entry: GaugeCheatEntry; remainingPt: number; tamemeshiNeeded: number } | null // 次に0kcalになるチート
   extraPt: number // 全部済みのとき、あと追加できる分
+  scalePt: number // ゲージの目盛りの最大 = max(合計, 貯まったpt)（14.2）
+}
+
+// ごほうび候補から選んだ一品（14.2）
+export interface RewardPick {
+  name: string
+  kcal: number
 }
 
 // ゲージに乗せるチートのアイコン（近いものは1つにまとめる）
@@ -300,6 +310,58 @@ export interface GaugeMarker {
   emoji: string
   count: number // まとめた件数（2以上で「×2」）
   zeroed: boolean // まとめた全部が0kcal化済み
+}
+
+// ===== v2.4 ログ（14.3） =====
+
+export type LogFilter = 'all' | 'meal' | 'exercise'
+
+export type LogEntry =
+  | { kind: 'meal'; log: MealLogRow; pt: number } // メシため（light）だけ。置き換えチートの食事は pt 0
+  | { kind: 'exercise'; log: ExerciseLogRow; pt: number }
+
+export interface LogDay {
+  date: string // YYYY-MM-DD
+  entries: LogEntry[] // 朝・昼・夜 → うごため（記録した順）
+}
+
+// ===== v2.4 体重チャート：チートの累計（棒）＋体重（線）（14.4） =====
+
+export type CheatChartPeriod = 'month' | 'all' // 今月 / はじめてから
+
+// 食べたチート1件（日付のある登録チートとがっつり）
+export interface CheatEvent {
+  date: string
+  costPt: number
+  emoji: string
+  name: string
+}
+
+// 棒1本（今月は1日、はじめてからは1週）
+export interface CheatChartBar {
+  from: string
+  to: string
+  cumulativeKcal: number | null // その日（週の終わり）までの累計。今日より先は null（棒を出さない）
+  events: CheatEvent[] // この日（週）に食べたチート
+}
+
+export interface CheatWeightPoint {
+  index: number // 棒の番号（横の位置）
+  kg: number
+}
+
+export interface CheatWeightChartData {
+  period: CheatChartPeriod
+  from: string
+  to: string
+  bars: CheatChartBar[]
+  maxKcal: number // 棒の高さの最大（0なら棒なし）
+  weightPoints: CheatWeightPoint[] // 体重の点（はじめてからは週の平均）
+  weightSegments: CheatWeightPoint[][] // ならした線（記録が無いところで途切れる）
+  yMin: number | null // 体重の縦の範囲（記録が無ければ null）
+  yMax: number | null
+  totalKcal: number // 見出しの累計 = 棒の最後 ＋ 週◯回のチート
+  weightChangeKg: number | null // 期間の体重の変化（条件が揃わなければ null）
 }
 
 // ===== フェーズ2 体重・7日平均 =====

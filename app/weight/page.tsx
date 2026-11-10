@@ -8,11 +8,14 @@ import { WeightEntryCard } from '@/components/WeightEntryCard'
 import { WeightChart } from '@/components/WeightChart'
 import { MilestoneCards } from '@/components/MilestoneCards'
 import { useMilestones } from '@/lib/milestones'
-import type { ChartPeriod, GoalPlanRow, WeightLog } from '@/types'
+import { useReducePace } from '@/lib/reducePace'
+import type { CheatChartPeriod, GoalPlanRow, MealLogRow, MonthlyWantRow, WeightLog } from '@/types'
 import {
   addDaysToDateStr,
+  buildCheatWeightChart,
   buildTargetLine,
-  buildWeightChartData,
+  calcDailyIntakeFromPace,
+  calcMealSlotTargets,
   calcTargetGap,
   calcWeekOverWeek,
   calcWeightAverage,
@@ -24,10 +27,9 @@ import {
 } from '@/lib/calories'
 
 const LIST_LIMIT = 30
-const PERIODS: { value: ChartPeriod; label: string }[] = [
-  { value: '1m', label: '1ヶ月' },
-  { value: '3m', label: '3ヶ月' },
-  { value: 'all', label: '全期間' },
+const PERIODS: { value: CheatChartPeriod; label: string }[] = [
+  { value: 'month', label: '今月' },
+  { value: 'all', label: 'はじめてから' },
 ]
 
 export default function WeightPage() {
@@ -35,7 +37,9 @@ export default function WeightPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [logs, setLogs] = useState<WeightLog[]>([])
   const [goal, setGoal] = useState<GoalPlanRow | null>(null)
-  const [period, setPeriod] = useState<ChartPeriod>('1m')
+  const [wants, setWants] = useState<MonthlyWantRow[]>([])
+  const [heartyLogs, setHeartyLogs] = useState<MealLogRow[]>([])
+  const [period, setPeriod] = useState<CheatChartPeriod>('month')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -47,13 +51,24 @@ export default function WeightPage() {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
       setUserId(user.id)
-      const [{ data, error: loadErr }, { data: goalData, error: goalErr }] = await Promise.all([
+      // チャートの棒（14.4）：日付のあるチートとがっつり。はじめてからの分まで読む（がっつりの記録は多くない）
+      const [
+        { data, error: loadErr },
+        { data: goalData, error: goalErr },
+        { data: wantData, error: wantErr },
+        { data: heartyData, error: heartyErr },
+      ] = await Promise.all([
         supabase.from('weight_logs').select('*').eq('user_id', user.id).order('measured_at', { ascending: true }),
         supabase.from('goal_plans').select('*').eq('user_id', user.id).eq('is_active', true).maybeSingle(),
+        supabase.from('monthly_wants').select('*').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('meal_logs').select('*').eq('user_id', user.id).eq('choice', 'hearty'),
       ])
-      if (loadErr || goalErr) setError((loadErr ?? goalErr)!.message)
+      const firstError = loadErr ?? goalErr ?? wantErr ?? heartyErr
+      if (firstError) setError(firstError.message)
       setLogs((data as WeightLog[]) || [])
       setGoal((goalData as GoalPlanRow) ?? null)
+      setWants((wantData as MonthlyWantRow[]) || [])
+      setHeartyLogs((heartyData as MealLogRow[]) || [])
       setLoading(false)
     })
   }, [router])
@@ -64,7 +79,15 @@ export default function WeightPage() {
   const weekOverWeek = useMemo(() => calcWeekOverWeek(logs, today), [logs, today])
   const todayLog = byDate.get(today) ?? null
   const { milestones, dismiss: dismissMilestone } = useMilestones(goal, average)
-  const chart = useMemo(() => (goal ? buildWeightChartData(logs, goal, period, today) : null), [logs, goal, period, today])
+  const { pace } = useReducePace(userId)
+  const slotTargets = useMemo(
+    () => (goal && pace ? calcMealSlotTargets(calcDailyIntakeFromPace(goal.tdee, goal.bmr, pace)) : []),
+    [goal, pace]
+  )
+  const chart = useMemo(
+    () => buildCheatWeightChart({ period, today, weightLogs: logs, wants, mealLogs: heartyLogs, slotTargets }),
+    [period, today, logs, wants, heartyLogs, slotTargets]
+  )
   const gap = useMemo(
     () => (goal ? calcTargetGap(average.avgKg, buildTargetLine(goal), today) : null),
     [goal, average.avgKg, today]
@@ -131,43 +154,47 @@ export default function WeightPage() {
 
             <MilestoneCards milestones={milestones} onDismiss={dismissMilestone} />
 
-            {/* 進捗チャート（11-4） */}
-            {goal && chart && (
-              <section className="bg-stone-900 rounded-3xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="font-bold text-sm">進み具合</h2>
-                  <div className="flex gap-1">
-                    {PERIODS.map((p) => (
-                      <button
-                        key={p.value}
-                        type="button"
-                        onClick={() => setPeriod(p.value)}
-                        className={`px-2.5 py-1 rounded-full text-xs ${
-                          period === p.value ? 'bg-amber-400 text-stone-950 font-bold' : 'bg-stone-800 text-stone-400'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {gap && (
-                  <p className="text-sm mb-2">
-                    目標ラインより{' '}
-                    <span className={gap.ahead ? 'text-amber-400 font-bold' : 'text-stone-200 font-bold'}>
-                      {Math.abs(gap.diffKg).toFixed(1)}kg {gap.ahead ? '先行' : '後ろ'}
-                    </span>
-                    {average.isReference && <span className="text-stone-600 text-xs ml-1">（参考値）</span>}
-                  </p>
-                )}
-                <WeightChart data={chart} today={today} />
-                <div className="flex gap-4 text-[11px] text-stone-500 mt-1 px-1">
-                  <span><span className="inline-block w-3 h-0.5 bg-amber-400 align-middle mr-1" />ならした線</span>
-                  <span><span className="inline-block w-1.5 h-1.5 rounded-full bg-stone-300/50 align-middle mr-1" />毎日</span>
-                  <span><span className="inline-block w-3 border-t border-dashed border-stone-300/60 align-middle mr-1" />目標ライン</span>
-                </div>
-              </section>
-            )}
+            {/* チートの累計（棒）＋体重（線）（14.4） */}
+            <section className="bg-stone-900 rounded-3xl p-4">
+              <div className="flex gap-1 mb-3">
+                {PERIODS.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => setPeriod(p.value)}
+                    className={`px-2.5 py-1 rounded-full text-xs ${
+                      period === p.value ? 'bg-amber-400 text-stone-950 font-bold' : 'bg-stone-800 text-stone-400'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-baseline justify-between mb-1">
+                <h2 className="font-bold text-sm">
+                  {period === 'month' ? `${Number(today.slice(5, 7))}月に食べたチート` : 'はじめてから食べたチート'}
+                </h2>
+                <span className="text-amber-400 font-bold">{chart.totalKcal.toLocaleString('ja-JP')}kcal</span>
+              </div>
+              <WeightChart key={period} data={chart} />
+              <div className="flex gap-4 text-[11px] text-stone-500 mt-1 px-1">
+                <span><span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-200/40 align-middle mr-1" />食べたチート（累計）</span>
+                <span><span className="inline-block w-3 h-0.5 bg-stone-100 align-middle mr-1" />ならした線</span>
+                <span>
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-stone-300/50 align-middle mr-1" />
+                  {period === 'month' ? '毎日' : '週の平均'}
+                </span>
+              </div>
+              {gap && (
+                <p className="text-xs text-stone-400 mt-3">
+                  目標ラインより{' '}
+                  <span className={gap.ahead ? 'text-amber-400 font-bold' : 'text-stone-200 font-bold'}>
+                    {Math.abs(gap.diffKg).toFixed(1)}kg {gap.ahead ? '先行' : '後ろ'}
+                  </span>
+                  {average.isReference && <span className="text-stone-600 ml-1">（参考値）</span>}
+                </p>
+              )}
+            </section>
 
             {/* 入力（7日前まで） */}
             <section>

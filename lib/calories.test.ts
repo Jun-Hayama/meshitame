@@ -76,11 +76,24 @@ import {
   getGaugeCheatName,
   calcMonthWeightChange,
   describeMonthWeightChange,
+  calcRewardKcal,
+  pickRewardItem,
+  calcBeerEquivalent,
+  calcExerciseMinutes,
+  formatExerciseLog,
+  buildLogDays,
+  buildCheatEvents,
+  calcFrequencyCheatKcal,
+  calcWeightYRange,
+  calcWeightChangeInRange,
+  describeWeightChangeShort,
+  buildCheatWeightChart,
 } from '@/lib/calories'
-import type { GaugeCheatEntry, MonthlyWantRow, WantEntry } from '@/types'
+import type { ExerciseLogRow, GaugeCheatEntry, MealLogRow, MonthlyWantRow, WantEntry } from '@/types'
 import { CHEAT_ITEMS } from '@/lib/cheatItems'
 import { FOOD_ITEM_MAP } from '@/lib/foodItems'
 import { MEAL_EXAMPLES } from '@/lib/mealExamples'
+import { REWARD_ITEMS } from '@/lib/rewardItems'
 
 // 2026-11 は30日。2026-11-01 は日曜、2026-11-02 は月曜
 const nov = (d: number) => new Date(2026, 10, d)
@@ -1331,5 +1344,290 @@ describe('月初めからの体重の変化（13.4）', () => {
     const logs = [...base, w('2026-11-09', 102.5), w('2026-11-12', 102.5), w('2026-11-15', 102.5)]
     expect(calcMonthWeightChange(logs, '2026-11-15')).toBeCloseTo(-0.3)
     expect(calcMonthWeightChange(logs, '2026-11-14')).toBeNull()
+  })
+})
+
+describe('ごほうび（14.2）', () => {
+  it('ごほうび = 貯まったpt − 目標（0より大きいときだけ）', () => {
+    expect(calcRewardKcal(500, 630)).toBe(0) // 目標未満
+    expect(calcRewardKcal(630, 630)).toBe(0) // ちょうど同じ
+    expect(calcRewardKcal(1050, 630)).toBe(420) // 超えた
+    expect(calcRewardKcal(300, 0)).toBe(300) // チート未登録
+  })
+
+  it('候補は kcal の小さい順に並んでいる', () => {
+    const kcals = REWARD_ITEMS.map((r) => calcMealExampleKcal(r.items))
+    expect(kcals).toEqual([...kcals].sort((a, b) => a - b))
+    expect(kcals[0]).toBe(150)
+  })
+
+  it('ごほうび以下でいちばん大きい候補。150未満は null', () => {
+    expect(pickRewardItem(0)).toBeNull()
+    expect(pickRewardItem(149)).toBeNull()
+    expect(pickRewardItem(150)).toEqual({ name: '高級アイス1個', kcal: 150 })
+    expect(pickRewardItem(199)).toEqual({ name: 'ワイン2杯', kcal: 180 })
+    expect(pickRewardItem(200)).toEqual({ name: '生ビール中ジョッキ', kcal: 200 })
+    expect(pickRewardItem(420)).toEqual({ name: 'ショートケーキ', kcal: 350 })
+    expect(pickRewardItem(1799)).toEqual({ name: 'ステーキ300g＋ライス', kcal: 1100 })
+    expect(pickRewardItem(1800)).toEqual({ name: '焼肉食べ放題', kcal: 1800 })
+    expect(pickRewardItem(5000)).toEqual({ name: '焼肉食べ放題', kcal: 1800 }) // いちばん大きい候補を超える
+  })
+
+  it('候補が1つも届かないときは null（候補表を渡す）', () => {
+    expect(pickRewardItem(300, [{ name: '焼肉', items: [{ id: 'yakiniku', qty: 1 }] }])).toBeNull()
+  })
+
+  it('ゲージの目盛りの最大は max(目標, 貯まったpt)', () => {
+    const e: GaugeCheatEntry = {
+      mode: 'hearty',
+      date: '2026-11-05',
+      slot: 'dinner',
+      costPt: 300,
+    }
+    expect(calcZeroCalStatus([e], 100).scalePt).toBe(300)
+    const over = calcZeroCalStatus([e], 600)
+    expect(over.scalePt).toBe(600)
+    expect(buildGaugeMarkers(over)[0].ratio).toBe(0.5)
+  })
+})
+
+describe('ログ（14.3）', () => {
+  const meal = (log_date: string, slot: 'morning' | 'lunch' | 'dinner', choice: 'light' | 'normal' | 'hearty'): MealLogRow => ({
+    id: `${log_date}:${slot}`,
+    user_id: 'u',
+    log_date,
+    slot,
+    choice,
+    created_at: `${log_date}T00:00:00Z`,
+  })
+  const ex = (
+    id: string,
+    log_date: string,
+    type: ExerciseLogRow['exercise_type'],
+    amount: number,
+    points: number
+  ): ExerciseLogRow => ({
+    id,
+    user_id: 'u',
+    log_date,
+    exercise_type: type,
+    minutes: type === 'steps' ? null : amount,
+    steps: type === 'steps' ? amount : null,
+    points,
+    created_at: `${log_date}T01:00:00Z`,
+  })
+
+  it('ビール換算：生ビール中ジョッキ（200kcal）で割って切り捨て', () => {
+    expect(calcBeerEquivalent(0)).toBe(0)
+    expect(calcBeerEquivalent(199)).toBe(0) // 1杯未満
+    expect(calcBeerEquivalent(200)).toBe(1)
+    expect(calcBeerEquivalent(1050)).toBe(5) // 5.25 → 5
+  })
+
+  it('うごための合計時間：歩数で記録したものは分に含めない', () => {
+    const logs = [
+      ex('a', '2026-11-03', 'walking', 30, 150),
+      ex('b', '2026-11-04', 'steps', 8000, 280),
+      ex('c', '2026-11-05', 'running', 20, 200),
+      ex('d', '2026-10-31', 'walking', 60, 300),
+    ]
+    expect(calcExerciseMinutes(logs, '2026-11-01', '2026-11-10')).toBe(50)
+  })
+
+  it('うごための表記', () => {
+    expect(formatExerciseLog(ex('a', '2026-11-03', 'walking', 30, 150))).toBe('ウォーキング30分')
+    expect(formatExerciseLog(ex('b', '2026-11-03', 'steps', 8000, 280))).toBe('8,000歩')
+  })
+
+  it('一覧：14日分・新しい日が上・メシためとうごためだけ・記録がない日は出さない', () => {
+    const meals = [
+      meal('2026-11-10', 'dinner', 'light'),
+      meal('2026-11-10', 'morning', 'light'),
+      meal('2026-11-10', 'lunch', 'normal'),
+      meal('2026-11-09', 'lunch', 'hearty'),
+      meal('2026-10-27', 'morning', 'light'), // 14日より前
+      meal('2026-10-28', 'morning', 'light'), // 14日目（今日を含む）
+    ]
+    const exercises = [ex('e1', '2026-11-08', 'walking', 30, 150)]
+    const days = buildLogDays({ today: '2026-11-10', mealLogs: meals, exerciseLogs: exercises, filter: 'all' })
+    expect(days.map((d) => d.date)).toEqual(['2026-11-10', '2026-11-08', '2026-10-28'])
+    expect(days[0].entries.map((e) => (e.kind === 'meal' ? e.log.slot : e.kind))).toEqual(['morning', 'dinner'])
+    expect(days[0].entries[0].pt).toBe(150)
+    expect(buildLogDays({ today: '2026-11-10', mealLogs: meals, exerciseLogs: exercises, filter: 'meal' }).map((d) => d.date)).toEqual([
+      '2026-11-10',
+      '2026-10-28',
+    ])
+    expect(buildLogDays({ today: '2026-11-10', mealLogs: meals, exerciseLogs: exercises, filter: 'exercise' }).map((d) => d.date)).toEqual([
+      '2026-11-08',
+    ])
+  })
+
+  it('置き換えチートの食事のメシためは 0pt で出す', () => {
+    const days = buildLogDays({
+      today: '2026-11-10',
+      mealLogs: [meal('2026-11-10', 'dinner', 'light')],
+      exerciseLogs: [],
+      filter: 'all',
+      replacedMealKeys: new Set(['2026-11-10:dinner']),
+    })
+    expect(days[0].entries[0].pt).toBe(0)
+  })
+})
+
+describe('体重チャート：チートの累計（14.4）', () => {
+  const slotTargets = [
+    { slot: 'morning' as const, kcal: 500 },
+    { slot: 'lunch' as const, kcal: 700 },
+    { slot: 'dinner' as const, kcal: 800 },
+  ]
+  const want = (over: Partial<MonthlyWantRow>): MonthlyWantRow => ({
+    id: Math.random().toString(36).slice(2),
+    user_id: 'u',
+    kind: 'other',
+    scheduled_date: null,
+    times_per_week: null,
+    label: 'チート',
+    is_active: true,
+    created_at: '2026-11-01T00:00:00Z',
+    cheat_type: 'addon',
+    replace_slot: null,
+    items: [{ genre: 'cake', name: 'ショートケーキ', kcal: 350, qty: 1 }],
+    total_kcal: 350,
+    ...over,
+  })
+  const hearty = (log_date: string, slot: 'morning' | 'lunch' | 'dinner' = 'dinner') => ({ log_date, slot, choice: 'hearty' as const })
+
+  it('日付のあるチートとがっつりを日付に。今日より先・期間より前は数えない', () => {
+    const events = buildCheatEvents({
+      wants: [
+        want({ scheduled_date: '2026-11-03' }),
+        want({ scheduled_date: '2026-11-20' }), // 今日より先
+        want({ scheduled_date: '2026-10-30' }), // 期間より前
+        want({ times_per_week: 1 }), // 週◯回は棒に入れない
+      ],
+      mealLogs: [hearty('2026-11-05'), hearty('2026-11-12')],
+      slotTargets,
+      from: '2026-11-01',
+      today: '2026-11-10',
+    })
+    expect(events.map((e) => [e.date, e.costPt, e.emoji])).toEqual([
+      ['2026-11-03', 350, '🍰'],
+      ['2026-11-05', 300, '🔥'],
+    ])
+  })
+
+  it('置き換えチートの食事のがっつりは数えない', () => {
+    const events = buildCheatEvents({
+      wants: [want({ scheduled_date: '2026-11-05', cheat_type: 'replace', replace_slot: 'dinner', total_kcal: 1200 })],
+      mealLogs: [hearty('2026-11-05', 'dinner')],
+      slotTargets,
+      from: '2026-11-01',
+      today: '2026-11-10',
+    })
+    expect(events.map((e) => e.costPt)).toEqual([400]) // 1200 − 夜の目安800
+  })
+
+  it('週◯回：今月は「月の回数 × 今日までの日数 ÷ 月の日数」の切り捨て、過去の月はまるごと', () => {
+    // 2026-11 は30日。週2回 → 月9回（2×30÷7=8.57 → 9）。11/10 までなら 9×10÷30 = 3
+    const row = want({ times_per_week: 2, created_at: '2026-10-05T00:00:00Z' })
+    expect(calcFrequencyCheatKcal({ wants: [row], slotTargets, from: '2026-11-01', today: '2026-11-10' })).toBe(3 * 350)
+    // はじめてから（10月から）：10月は31日で 2×31÷7=8.86 → 9回まるごと ＋ 11月の3回
+    expect(calcFrequencyCheatKcal({ wants: [row], slotTargets, from: '2026-10-01', today: '2026-11-10' })).toBe(12 * 350)
+    // 登録した月より前は数えない
+    const novRow = want({ times_per_week: 2, created_at: '2026-11-02T00:00:00Z' })
+    expect(calcFrequencyCheatKcal({ wants: [novRow], slotTargets, from: '2026-09-01', today: '2026-11-10' })).toBe(3 * 350)
+    // 今日までの日数が少ないと0回
+    expect(calcFrequencyCheatKcal({ wants: [row], slotTargets, from: '2026-11-01', today: '2026-11-03' })).toBe(0)
+    // 日付のあるチートは含めない
+    expect(calcFrequencyCheatKcal({ wants: [want({ scheduled_date: '2026-11-03' })], slotTargets, from: '2026-11-01', today: '2026-11-10' })).toBe(0)
+  })
+
+  it('棒は階段状の累計。今日より先は null、見出しの累計は週◯回も含む', () => {
+    const chart = buildCheatWeightChart({
+      period: 'month',
+      today: '2026-11-10',
+      weightLogs: [],
+      wants: [want({ scheduled_date: '2026-11-03' }), want({ times_per_week: 2, created_at: '2026-10-05T00:00:00Z' })],
+      mealLogs: [hearty('2026-11-05')],
+      slotTargets,
+    })
+    expect(chart.from).toBe('2026-11-01')
+    expect(chart.to).toBe('2026-11-30')
+    expect(chart.bars).toHaveLength(30)
+    expect(chart.bars.slice(0, 6).map((b) => b.cumulativeKcal)).toEqual([0, 0, 350, 350, 650, 650])
+    expect(chart.bars[9].cumulativeKcal).toBe(650) // 今日
+    expect(chart.bars[10].cumulativeKcal).toBeNull() // 明日
+    expect(chart.maxKcal).toBe(650)
+    expect(chart.totalKcal).toBe(650 + 3 * 350)
+    expect(chart.yMin).toBeNull() // 体重の記録なし
+  })
+
+  it('はじめてから：最初に体重を記録した日から、週ごとの累計と週の平均', () => {
+    const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+    const chart = buildCheatWeightChart({
+      period: 'all',
+      today: '2026-11-10', // 火曜
+      weightLogs: [w('2026-10-28', 104), w('2026-10-30', 103), w('2026-11-03', 103.5), w('2026-11-10', 102)],
+      wants: [want({ scheduled_date: '2026-11-03' }), want({ scheduled_date: '2026-10-20' })],
+      mealLogs: [hearty('2026-10-29')],
+      slotTargets,
+    })
+    expect(chart.from).toBe('2026-10-28') // 水曜
+    expect(chart.bars.map((b) => [b.from, b.to])).toEqual([
+      ['2026-10-28', '2026-11-01'],
+      ['2026-11-02', '2026-11-08'],
+      ['2026-11-09', '2026-11-10'],
+    ])
+    expect(chart.bars.map((b) => b.cumulativeKcal)).toEqual([300, 650, 650]) // 10/20 は期間より前
+    expect(chart.weightPoints.map((p) => [p.index, p.kg])).toEqual([
+      [0, 103.5],
+      [1, 103.5],
+      [2, 102],
+    ])
+  })
+})
+
+describe('体重の縦の範囲（14.4）', () => {
+  it('±2kg に収まるときは中心 ± 2kg', () => {
+    expect(calcWeightYRange([103, 102.1, 101.5], 103)).toEqual({ yMin: 101, yMax: 105 })
+  })
+
+  it('外れる値があるときだけ、収まるように広げる', () => {
+    const r = calcWeightYRange([103, 100.5], 103)
+    expect(r.yMin).toBeCloseTo(100.3)
+    expect(r.yMax).toBe(105)
+    const up = calcWeightYRange([103, 105.6], 103)
+    expect(up.yMin).toBe(101)
+    expect(up.yMax).toBeCloseTo(105.8)
+  })
+})
+
+describe('期間を指定した体重変化（14.4）', () => {
+  const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+  const oct = [w('2026-10-01', 105), w('2026-10-02', 105), w('2026-10-04', 105)] // はじめての7日間 平均105
+  const novBase = [w('2026-11-01', 103.5), w('2026-11-02', 103.4), w('2026-11-03', 103.3)] // 今月の基準 103.4
+  const now = [w('2026-11-14', 103.0), w('2026-11-15', 103.0), w('2026-11-16', 103.0)]
+  const logs = [...oct, ...novBase, ...now]
+
+  it('今月：月の最初の記録からの7日間が基準', () => {
+    expect(calcWeightChangeInRange(logs, '2026-11-01', '2026-11-16')).toBeCloseTo(-0.4)
+    expect(calcMonthWeightChange(logs, '2026-11-16')).toBeCloseTo(-0.4)
+  })
+
+  it('はじめてから：最初に体重を記録した日からの7日間が基準', () => {
+    const diff = calcWeightChangeInRange(logs, '2026-10-01', '2026-11-16')
+    expect(diff).toBeCloseTo(-2.0)
+    expect(describeWeightChangeShort(diff!)).toBe('体重 2.0kg減')
+  })
+
+  it('記録が足りないときは null', () => {
+    expect(calcWeightChangeInRange([], '2026-10-01', '2026-11-16')).toBeNull()
+    expect(calcWeightChangeInRange([...oct, w('2026-11-16', 103)], '2026-10-01', '2026-11-16')).toBeNull()
+    expect(calcWeightChangeInRange(logs, '2026-11-01', '2026-11-05')).toBeNull() // 基準と重なる
+  })
+
+  it('表記：0.1kg未満は「変わらず」', () => {
+    expect(describeWeightChangeShort(0.05)).toBe('体重 変わらず')
+    expect(describeWeightChangeShort(0.2)).toBe('体重 0.2kg増')
   })
 })

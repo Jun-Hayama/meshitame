@@ -55,7 +55,7 @@ export const WANT_COSTS: Record<WantKind, number> = {
   other: 300, // その他（中身を選んだチートは total_kcal を使うので、ふつうは使われない）
 }
 
-// メシポイント（1pt = 1kcal）
+// チーぽ（1pt = 1kcal。14.1）
 export const KCAL_PER_POINT = 1
 export const EXERCISE_POINTS = {
   walking_30min: 150, // ウォーキング30分
@@ -111,3 +111,14 @@ export const WEEK_EARNED_EQUIVALENTS = [
 export const ZERO_CAL_HEADLINE_MAX = 3
 // ゲージのアイコン：前のアイコンとの間がこれ未満（ゲージの長さに対する割合）なら1つにまとめる
 export const GAUGE_MARKER_MIN_GAP = 0.08
+
+// ごほうび（14.2）：これ未満のときは「いまなら {品名} までいけます」を出さない
+export const REWARD_MIN_KCAL = 150
+
+// ログ（14.3）：一覧に出す日数（今日を含む）
+export const LOG_DAYS = 14
+
+// 体重チャート（14.4）：体重の縦の範囲 = 期間の最初のならした値 ± この幅（外れる値があるときだけ広げる）
+export const CHART_WEIGHT_HALF_RANGE_KG = 2
+// 広げるときの余白（kg）
+export const CHART_WEIGHT_EXPAND_PAD_KG = 0.2

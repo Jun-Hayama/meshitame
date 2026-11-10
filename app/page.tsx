@@ -29,6 +29,8 @@ import {
   calcMonthEarnedBreakdown,
   calcWeekSummary,
   calcZeroCalStatus,
+  calcRewardKcal,
+  pickRewardItem,
   describeMonthWeightChange,
   describeWeekEarned,
   describeZeroCalHeadline,
@@ -184,6 +186,8 @@ export default function Home() {
   )
   const earned = calcMonthEarnedBreakdown({ year, month, today, mealLogs, exerciseLogs, replacedMealKeys })
   const zeroCal = calcZeroCalStatus(orderedCheats, earned.totalPt)
+  // ごほうび = 貯まったpt − 目標（14.2）
+  const rewardKcal = calcRewardKcal(earned.totalPt, zeroCal.totalPt)
   const monthWeightChange = calcMonthWeightChange(weightLogs, today)
 
   // 記録のあと、新たに0kcal化済みになったチートがあればトースト（複数なら最後の1件）
@@ -456,7 +460,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ◯月のメシため（13.3）と今週の行（13.5） */}
+        {/* ◯月のメシため（13.3・14.2）と今週の行（13.5） */}
         <section className="mb-8">
           <MonthMeshitameCard
             month={month}
@@ -465,10 +469,13 @@ export default function Home() {
             headline={describeZeroCalHeadline(zeroCal)}
             earned={earned}
             weightLine={monthWeightChange === null ? null : describeMonthWeightChange(monthWeightChange)}
+            rewardKcal={rewardKcal}
+            rewardItem={pickRewardItem(rewardKcal)}
             onAddExercise={() => setShowExercise(true)}
             onAddCheat={() => setShowCheatPicker(true)}
+            onOpenLog={() => router.push('/log')}
           />
-          <WeekLine summary={weekSummary} label={weekLabel} />
+          <WeekLine summary={weekSummary} label={weekLabel} onOpenLog={() => router.push('/log')} />
           <button type="button" onClick={() => router.push('/wants')} className="text-amber-400 text-xs mt-3 px-1">
             チートの一覧・編集
           </button>

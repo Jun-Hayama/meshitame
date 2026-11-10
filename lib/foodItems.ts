@@ -199,6 +199,14 @@ const FOODS = {
   latte: { name: 'カフェラテ', unit: '杯', kcal: 130 },
   milk: { name: '牛乳', unit: '杯', kcal: 130 },
   cola500: { name: 'コーラ（500ml）', unit: '本', kcal: 220 },
+
+  // --- ごほうび候補（lib/rewardItems.ts） ---
+  premium_ice: { name: '高級アイス', unit: '個', kcal: 150 },
+  draft_beer: { name: '生ビール（中ジョッキ）', unit: '杯', kcal: 200 },
+  tokujo_nigiri: { name: '特上にぎり', unit: '人前', kcal: 500 },
+  kotteri_ramen: { name: 'こってりラーメン', unit: '杯', kcal: 650 },
+  tokujo_karubi_set: { name: '特上カルビ定食', unit: '人前', kcal: 800 },
+  unaju_tokujo: { name: 'うな重（特上）', unit: '人前', kcal: 1000 },
 } as const satisfies Record<string, FoodDef>
 
 export type FoodId = keyof typeof FOODS

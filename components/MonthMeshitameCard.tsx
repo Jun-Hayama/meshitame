@@ -1,6 +1,6 @@
 'use client'
 
-// 「◯月のメシため」カード（docs/v2-spec.md 13.3）。計算は lib/calories.ts で済ませた値を受け取って出すだけ
+// 「◯月のメシため」カード（docs/v2-spec.md 13.3・14.2）。計算は lib/calories.ts で済ませた値を受け取って出すだけ
 
 import { useState } from 'react'
 import { getGaugeCheatName } from '@/lib/calories'
@@ -11,6 +11,7 @@ import {
   MEAL_CHOICE_LABELS,
   type EarnedBreakdown,
   type GaugeMarker,
+  type RewardPick,
   type ZeroCalStatus,
 } from '@/types'
 
@@ -23,8 +24,11 @@ export function MonthMeshitameCard({
   headline,
   earned,
   weightLine,
+  rewardKcal,
+  rewardItem,
   onAddExercise,
   onAddCheat,
+  onOpenLog,
 }: {
   month: number
   status: ZeroCalStatus
@@ -32,12 +36,25 @@ export function MonthMeshitameCard({
   headline: string
   earned: EarnedBreakdown
   weightLine: string | null // 「これだけ食べて、月初めから0.4kg減」。条件が揃わないときは null
+  rewardKcal: number // ごほうび = 貯まったpt − 目標（0以上）
+  rewardItem: RewardPick | null // 「いまなら {品名} までいけます」（150kcal未満は null）
   onAddExercise: () => void
   onAddCheat: () => void
+  onOpenLog: () => void // 「記録を見る・直す」（/log）
 }) {
   const [open, setOpen] = useState(false)
   const hasCheats = status.entries.length > 0
-  const fillRatio = status.totalPt > 0 ? Math.min(1, status.earnedPt / status.totalPt) : 0
+  // 目盛りの最大 = max(目標, 貯まったpt)。目標までは amber-400、その先（ごほうび）は amber-200
+  const scale = status.scalePt || 1
+  const targetRatio = Math.min(1, Math.min(status.earnedPt, status.totalPt) / scale)
+  const rewardRatio = status.earnedPt > status.totalPt ? (status.earnedPt - status.totalPt) / scale : 0
+
+  const reward = rewardKcal > 0 && (
+    <p className="text-xs mt-1">
+      <span className="text-amber-200">ごほうび {rewardKcal}kcal</span>
+      {rewardItem && <span className="block text-stone-300 mt-0.5">いまなら {rewardItem.name} までいけます</span>}
+    </p>
+  )
 
   return (
     <div className="bg-stone-900 rounded-2xl px-4 pt-4 pb-4">
@@ -65,6 +82,7 @@ export function MonthMeshitameCard({
         <button type="button" onClick={onAddCheat} className="w-full text-left">
           <p className="text-amber-400 text-sm font-bold mb-1">{headline}</p>
           <p className="text-stone-500 text-xs">食べたいものを決めると、メシためで0kcalにしていけます</p>
+          {reward}
           {weightLine && <p className="text-stone-300 text-xs mt-3">{weightLine}</p>}
         </button>
       ) : (
@@ -96,8 +114,14 @@ export function MonthMeshitameCard({
             <div className="relative h-3 bg-stone-800 rounded-full mt-1 mb-3">
               <div
                 className="absolute inset-y-0 left-0 bg-amber-400 rounded-full transition-all"
-                style={{ width: `${fillRatio * 100}%` }}
+                style={{ width: `${targetRatio * 100}%` }}
               />
+              {rewardRatio > 0 && (
+                <div
+                  className="absolute inset-y-0 bg-amber-200 rounded-r-full transition-all"
+                  style={{ left: `${targetRatio * 100}%`, width: `${rewardRatio * 100}%` }}
+                />
+              )}
             </div>
           </div>
 
@@ -108,12 +132,9 @@ export function MonthMeshitameCard({
                 ・あと{MEAL_CHOICE_LABELS.light}
                 {status.next.tamemeshiNeeded}回で{getGaugeCheatName(status.next.entry)}も0kcal
               </span>
-            ) : (
-              status.extraPt > 0 && (
-                <span className="block text-amber-400 mt-0.5">あと{status.extraPt}kcal分、チートを追加できます</span>
-              )
-            )}
+            ) : null}
           </p>
+          {!status.next && reward}
 
           {weightLine && <p className="text-stone-300 text-xs mt-3">{weightLine}</p>}
 
@@ -152,6 +173,11 @@ export function MonthMeshitameCard({
           ) : (
             <p className="text-stone-600 text-[11px] mt-3">タップで内訳</p>
           )}
+        </button>
+      )}
+      {open && hasCheats && (
+        <button type="button" onClick={onOpenLog} className="text-amber-400 text-xs mt-3">
+          記録を見る・直す
         </button>
       )}
     </div>

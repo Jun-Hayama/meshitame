@@ -7,6 +7,7 @@ import {
   EXERCISE_LABEL,
   EXERCISE_TYPE_EMOJI,
   EXERCISE_TYPE_LABELS,
+  POINT_LABEL,
   type ExerciseLogRow,
   type ExerciseType,
 } from '@/types'
@@ -16,21 +17,27 @@ const TYPES: ExerciseType[] = ['walking', 'running', 'weights', 'cycling', 'spor
 const MINUTE_PRESETS = [10, 20, 30, 45, 60, 90]
 const STEP_PRESETS = [3000, 5000, 8000, 10000]
 
+// editing を渡すと、その記録を直す・削除するシートになる（14.3）
 export function ExerciseSheet({
   userId,
   logDate,
+  editing,
   onClose,
   onSaved,
+  onDeleted,
 }: {
   userId: string
   logDate: string // YYYY-MM-DD（日本時間）
+  editing?: ExerciseLogRow
   onClose: () => void
   onSaved: (row: ExerciseLogRow) => void
+  onDeleted?: (id: string) => void
 }) {
-  const [type, setType] = useState<ExerciseType>('walking')
-  const [minutes, setMinutes] = useState(30)
-  const [steps, setSteps] = useState(8000)
+  const [type, setType] = useState<ExerciseType>(editing?.exercise_type ?? 'walking')
+  const [minutes, setMinutes] = useState(editing?.minutes ?? 30)
+  const [steps, setSteps] = useState(editing?.steps ?? 8000)
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const points =
@@ -39,18 +46,19 @@ export function ExerciseSheet({
   async function save() {
     setSaving(true)
     setError(null)
-    const { data, error: insErr } = await supabase
-      .from('exercise_logs')
-      .insert({
-        user_id: userId,
-        log_date: logDate,
-        exercise_type: type,
-        minutes: type === 'steps' ? null : minutes,
-        steps: type === 'steps' ? steps : null,
-        points,
-      })
-      .select()
-      .single()
+    const values = {
+      exercise_type: type,
+      minutes: type === 'steps' ? null : minutes,
+      steps: type === 'steps' ? steps : null,
+      points,
+    }
+    const { data, error: insErr } = editing
+      ? await supabase.from('exercise_logs').update(values).eq('id', editing.id).select().single()
+      : await supabase
+          .from('exercise_logs')
+          .insert({ user_id: userId, log_date: logDate, ...values })
+          .select()
+          .single()
     setSaving(false)
     if (insErr) {
       setError(
@@ -63,6 +71,23 @@ export function ExerciseSheet({
     onSaved(data as ExerciseLogRow)
   }
 
+  async function remove() {
+    if (!editing) return
+    if (!confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const { error: delErr } = await supabase.from('exercise_logs').delete().eq('id', editing.id)
+    setSaving(false)
+    if (delErr) {
+      setError(delErr.message)
+      return
+    }
+    onDeleted?.(editing.id)
+  }
+
   const chip = (on: boolean) =>
     `py-2 rounded-xl text-sm ${on ? 'bg-amber-400 text-stone-950 font-bold' : 'bg-stone-800 text-stone-400'}`
 
@@ -70,7 +95,9 @@ export function ExerciseSheet({
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60" onClick={onClose}>
       <div className="w-full max-w-md bg-stone-900 rounded-t-3xl px-5 pt-5 pb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h3 className="font-bold">{EXERCISE_EMOJI} {EXERCISE_LABEL}を追加</h3>
+          <h3 className="font-bold">
+            {EXERCISE_EMOJI} {EXERCISE_LABEL}を{editing ? '直す' : '追加'}
+          </h3>
           <button type="button" onClick={onClose} className="text-stone-500 text-sm">
             閉じる
           </button>
@@ -127,7 +154,7 @@ export function ExerciseSheet({
           </>
         )}
 
-        <p className="text-amber-400 text-sm font-medium mb-4">＋{points}pt がメシポに貯まる</p>
+        <p className="text-amber-400 text-sm font-medium mb-4">＋{points}pt が{POINT_LABEL}に貯まる</p>
 
         {error && <p className="text-rose-400 text-sm mb-3">{error}</p>}
 
@@ -137,8 +164,20 @@ export function ExerciseSheet({
           onClick={save}
           className="w-full bg-amber-400 text-stone-950 font-bold py-3.5 rounded-2xl text-sm disabled:opacity-50"
         >
-          {saving ? '記録中...' : '記録する'}
+          {saving ? '保存中...' : editing ? '直す' : '記録する'}
         </button>
+        {editing && (
+          <button
+            type="button"
+            disabled={saving}
+            onClick={remove}
+            className={`w-full mt-3 py-3 rounded-2xl text-sm ${
+              confirmDelete ? 'bg-rose-500/20 text-rose-300 font-bold' : 'text-stone-500'
+            }`}
+          >
+            {confirmDelete ? 'もう一度タップで削除' : 'この記録を削除する'}
+          </button>
+        )}
       </div>
     </div>
   )
