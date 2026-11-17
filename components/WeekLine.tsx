@@ -1,6 +1,6 @@
 'use client'
 
-// 今週の行（docs/v2-spec.md 13.5・14.3）。「今週 +◯pt」の1行、タップで内訳。日曜・月曜は振り返り文に置き換える
+// 今週の行（docs/v2-spec.md 13.5・14.3・15.2）。「今週 +◯pt」の1行（順調なら「 ・ 順調です」）、タップで内訳。日曜・月曜は振り返り文に置き換える
 
 import { useState } from 'react'
 import { getGaugeCheatName } from '@/lib/calories'
@@ -19,10 +19,12 @@ const shortDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.s
 export function WeekLine({
   summary,
   label,
+  onPace = false,
   onOpenLog,
 }: {
   summary: WeekSummary
   label: string
+  onPace?: boolean // 「 ・ 順調です」を足す（振り返り文の日は false を渡す）
   onOpenLog: () => void // 「記録を見る・直す」（/log）
 }) {
   const [open, setOpen] = useState(false)
@@ -33,7 +35,10 @@ export function WeekLine({
     <div className="px-1 mt-2">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full text-left">
         <p className="text-stone-400 text-xs flex justify-between">
-          <span>{label}</span>
+          <span>
+            {label}
+            {onPace && <span className="text-amber-400"> ・ 順調です</span>}
+          </span>
           <span className="text-stone-600 shrink-0 ml-2">{open ? '▴' : '▾'}</span>
         </p>
         {open && (

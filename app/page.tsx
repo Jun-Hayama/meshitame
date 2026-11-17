@@ -34,6 +34,8 @@ import {
   describeMonthWeightChange,
   describeWeekEarned,
   describeZeroCalHeadline,
+  describeZeroCalSubline,
+  getZeroCalStage,
   detectNewlyZeroed,
   expandCheatsForMonth,
   addDaysToDateStr,
@@ -44,9 +46,18 @@ import {
   getReplacedMealKeys,
   getReviewWeek,
   getWeekRange,
+  isOnPaceToday,
+  isWeightRisingThreeWeeks,
   orderZeroCalCheats,
+  shouldShowWeightReassurance,
 } from '@/lib/calories'
-import { TAMEMESHI_PT, WEIGHT_AVG_DAYS } from '@/lib/calorieConstants'
+import {
+  TAMEMESHI_PT,
+  WEIGHT_AVG_DAYS,
+  WEIGHT_REASSURE_MESSAGE,
+  WEIGHT_REASSURE_TOAST_MS,
+  WEIGHT_RISING_WEEKS,
+} from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
 import { CheatItemPicker } from '@/components/CheatItemPicker'
 import { ExerciseSheet } from '@/components/ExerciseSheet'
@@ -80,7 +91,7 @@ export default function Home() {
   const [showExercise, setShowExercise] = useState(false)
   const [exampleSlot, setExampleSlot] = useState<MealSlot | null>(null)
   const [savingSlot, setSavingSlot] = useState<MealSlot | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ message: string; durationMs?: number } | null>(null)
   const clearToast = useCallback(() => setToast(null), [])
   // メシため・うごためを記録する直前の貯まったpt（記録後に0kcal化を判定する。13.3）
   const ptBeforeRecord = useRef<number | null>(null)
@@ -92,8 +103,9 @@ export default function Home() {
   const recordRange = getRecordableDateRange(today)
   // 記録の読み込み範囲：月初と7日前の早い方〜今日（前月の日を表示しても記録が見えるように）
   const loadFrom = recordRange.min < monthStart ? recordRange.min : monthStart
-  // 体重は、表示できる一番前の日の7日平均と、月初めからの変化（13.4）まで出せるように読む
-  const weightFrom = addDaysToDateStr(recordRange.min, -(WEIGHT_AVG_DAYS - 1))
+  // 体重は、月初めからの変化（13.4）と、表示できる一番前の日の前日までの7日平均（15.3）、
+  // 今日・7日前・14日前の前週比（15.3 の3週続けて増）まで出せるように読む
+  const weightFrom = addDaysToDateStr(today, -(WEIGHT_AVG_DAYS * WEIGHT_RISING_WEEKS + WEIGHT_AVG_DAYS - 1))
   const weightLoadFrom = weightFrom < loadFrom ? weightFrom : loadFrom
 
   // 表示中の日（7日前〜今日）。記録はこの日付で保存する
@@ -189,6 +201,8 @@ export default function Home() {
   // ごほうび = 貯まったpt − 目標（14.2）
   const rewardKcal = calcRewardKcal(earned.totalPt, zeroCal.totalPt)
   const monthWeightChange = calcMonthWeightChange(weightLogs, today)
+  // 順調（15.1）：今月の貯まったpt ≧ ペースの目印、かつ > 0
+  const onPace = isOnPaceToday(today, zeroCal.totalPt, earned.totalPt)
 
   // 記録のあと、新たに0kcal化済みになったチートがあればトースト（複数なら最後の1件）
   // （記録が保存されて mealLogs / exerciseLogs が変わったあとに1回だけ判定する）
@@ -197,7 +211,7 @@ export default function Home() {
     if (before === null) return
     ptBeforeRecord.current = null
     const zeroed = detectNewlyZeroed(orderedCheats, before, earned.totalPt)
-    if (zeroed) setToast(`${getGaugeCheatName(zeroed)}、なかったことに。`)
+    if (zeroed) setToast({ message: `${getGaugeCheatName(zeroed)}、なかったことに。` })
   }, [earned.totalPt, orderedCheats, exerciseLogs])
 
   // 週（月〜日）：「今週 +◯pt」。日曜は今週、月曜は先週の分を振り返り文に置き換える（13.5）
@@ -258,6 +272,20 @@ export default function Home() {
       const rest = prev.filter((l) => !(l.log_date === row.log_date && l.slot === slot))
       return [...rest, row]
     })
+  }
+
+  // 体重を保存したら、上がった日のひと言（15.3）
+  function handleWeightSaved(row: WeightLog) {
+    const next = [...weightLogs.filter((w) => w.measured_at !== row.measured_at), row]
+    setWeightLogs(next)
+    const show = shouldShowWeightReassurance({
+      logs: next,
+      date: row.measured_at,
+      weightKg: Number(row.weight_kg),
+      onPace,
+      risingThreeWeeks: isWeightRisingThreeWeeks(next, today),
+    })
+    if (show) setToast({ message: WEIGHT_REASSURE_MESSAGE, durationMs: WEIGHT_REASSURE_TOAST_MS })
   }
 
   function choiceFor(slot: MealSlot): MealChoice | null {
@@ -381,9 +409,7 @@ export default function Home() {
               today={today}
               log={viewWeight}
               compact
-              onSaved={(row) =>
-                setWeightLogs((prev) => [...prev.filter((w) => w.measured_at !== row.measured_at), row])
-              }
+              onSaved={handleWeightSaved}
             />
             {viewAverage.avgKg !== null && (
               <button type="button" onClick={() => router.push('/weight')} className="text-stone-500 text-xs mt-1.5 px-1">
@@ -467,6 +493,8 @@ export default function Home() {
             status={zeroCal}
             markers={buildGaugeMarkers(zeroCal)}
             headline={describeZeroCalHeadline(zeroCal)}
+            subline={describeZeroCalSubline(zeroCal)}
+            stage={getZeroCalStage(zeroCal)}
             earned={earned}
             weightLine={monthWeightChange === null ? null : describeMonthWeightChange(monthWeightChange)}
             rewardKcal={rewardKcal}
@@ -475,7 +503,12 @@ export default function Home() {
             onAddCheat={() => setShowCheatPicker(true)}
             onOpenLog={() => router.push('/log')}
           />
-          <WeekLine summary={weekSummary} label={weekLabel} onOpenLog={() => router.push('/log')} />
+          <WeekLine
+            summary={weekSummary}
+            label={weekLabel}
+            onPace={!reviewWeek && onPace}
+            onOpenLog={() => router.push('/log')}
+          />
           <button type="button" onClick={() => router.push('/wants')} className="text-amber-400 text-xs mt-3 px-1">
             チートの一覧・編集
           </button>
@@ -524,7 +557,7 @@ export default function Home() {
         <MealExamplesSheet target={exampleTarget} onClose={() => setExampleSlot(null)} />
       )}
 
-      {toast && <Toast message={toast} onDone={clearToast} />}
+      {toast && <Toast message={toast.message} durationMs={toast.durationMs} onDone={clearToast} />}
 
       <BottomNav active="home" />
     </div>

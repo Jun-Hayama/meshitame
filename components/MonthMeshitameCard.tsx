@@ -1,6 +1,6 @@
 'use client'
 
-// 「◯月のメシため」カード（docs/v2-spec.md 13.3・14.2）。計算は lib/calories.ts で済ませた値を受け取って出すだけ
+// 「◯月のメシため」カード（docs/v2-spec.md 13.3・14.2・15.4）。計算は lib/calories.ts で済ませた値を受け取って出すだけ
 
 import { useState } from 'react'
 import { getGaugeCheatName } from '@/lib/calories'
@@ -12,6 +12,7 @@ import {
   type EarnedBreakdown,
   type GaugeMarker,
   type RewardPick,
+  type ZeroCalStage,
   type ZeroCalStatus,
 } from '@/types'
 
@@ -22,6 +23,8 @@ export function MonthMeshitameCard({
   status,
   markers,
   headline,
+  subline,
+  stage,
   earned,
   weightLine,
   rewardKcal,
@@ -34,6 +37,8 @@ export function MonthMeshitameCard({
   status: ZeroCalStatus
   markers: GaugeMarker[]
   headline: string
+  subline: string | null // ゲージの下の行（「あと 830kcal」など）。全部のときは null（ごほうびの行を出す）
+  stage: ZeroCalStage
   earned: EarnedBreakdown
   weightLine: string | null // 「これだけ食べて、月初めから0.4kg減」。条件が揃わないときは null
   rewardKcal: number // ごほうび = 貯まったpt − 目標（0以上）
@@ -49,10 +54,12 @@ export function MonthMeshitameCard({
   const targetRatio = Math.min(1, Math.min(status.earnedPt, status.totalPt) / scale)
   const rewardRatio = status.earnedPt > status.totalPt ? (status.earnedPt - status.totalPt) / scale : 0
 
+  // ごほうびの行（15.4）。頭の小さな棒はゲージのはみ出し部分（amber-200）と同じ色・形
   const reward = rewardKcal > 0 && (
-    <p className="text-xs mt-1">
-      <span className="text-amber-200">ごほうび {rewardKcal}kcal</span>
-      {rewardItem && <span className="block text-stone-300 mt-0.5">いまなら {rewardItem.name} までいけます</span>}
+    <p className="text-xs text-amber-200 mt-1">
+      <span className="inline-block w-3 h-1.5 rounded-full bg-amber-200 mr-1.5 align-middle" />
+      ごほうび {rewardKcal.toLocaleString('ja-JP')}kcal
+      {rewardItem && <span className="text-stone-300"> ・ {rewardItem.name}までいけます</span>}
     </p>
   )
 
@@ -87,7 +94,7 @@ export function MonthMeshitameCard({
         </button>
       ) : (
         <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full text-left">
-          <p className={`text-sm font-bold mb-4 ${status.zeroedCount > 0 ? 'text-amber-400' : 'text-stone-200'}`}>
+          <p className={`text-sm font-bold mb-4 ${stage === 'empty' ? 'text-stone-200' : 'text-amber-400'}`}>
             {headline}
           </p>
 
@@ -125,18 +132,18 @@ export function MonthMeshitameCard({
             </div>
           </div>
 
-          <p className="text-xs text-stone-400">
-            ゼロカロ化 <span className="text-amber-400 font-bold">{status.zeroedPt}</span> / {status.totalPt}kcal
-            {status.next ? (
-              <span className="block text-stone-500 mt-0.5">
-                ・あと{MEAL_CHOICE_LABELS.light}
-                {status.next.tamemeshiNeeded}回で{getGaugeCheatName(status.next.entry)}も0kcal
-              </span>
-            ) : null}
-          </p>
-          {!status.next && reward}
+          {subline && <p className={`text-xs ${stage === 'empty' ? 'text-stone-500' : 'text-stone-400'}`}>{subline}</p>}
+          {stage === 'full' && reward}
 
-          {weightLine && <p className="text-stone-300 text-xs mt-3">{weightLine}</p>}
+          <div className="flex items-end justify-between mt-3">
+            {weightLine ? <p className="text-stone-300 text-xs">{weightLine}</p> : <span />}
+            <span
+              aria-hidden
+              className={`text-stone-600 text-sm leading-none ml-2 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+            >
+              ›
+            </span>
+          </div>
 
           {open ? (
             <div className="mt-4 pt-3 border-t border-stone-800 text-xs space-y-3">
@@ -170,9 +177,7 @@ export function MonthMeshitameCard({
               </ul>
               <p className="text-stone-600">閉じる</p>
             </div>
-          ) : (
-            <p className="text-stone-600 text-[11px] mt-3">タップで内訳</p>
-          )}
+          ) : null}
         </button>
       )}
       {open && hasCheats && (

@@ -1,21 +1,26 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
 import { WeightEntryCard } from '@/components/WeightEntryCard'
 import { WeightChart } from '@/components/WeightChart'
 import { MilestoneCards } from '@/components/MilestoneCards'
+import { Toast } from '@/components/Toast'
 import { useMilestones } from '@/lib/milestones'
 import { useReducePace } from '@/lib/reducePace'
-import type { CheatChartPeriod, GoalPlanRow, MealLogRow, MonthlyWantRow, WeightLog } from '@/types'
+import type { CheatChartPeriod, ExerciseLogRow, GoalPlanRow, MealLogRow, MonthlyWantRow, WeightLog } from '@/types'
 import {
   addDaysToDateStr,
   buildCheatWeightChart,
+  buildGaugeCheats,
   buildTargetLine,
   calcDailyIntakeFromPace,
   calcMealSlotTargets,
+  calcMonthEarnedBreakdown,
+  calcZeroCalStatus,
+  expandCheatsForMonth,
   calcTargetGap,
   calcWeekOverWeek,
   calcWeightAverage,
@@ -23,8 +28,14 @@ import {
   formatWeightChange,
   formatMonthDayWeekday,
   getRecordableDateRange,
+  getReplacedMealKeys,
+  isOnPaceToday,
   isRecordableDate,
+  isWeightRisingThreeWeeks,
+  orderZeroCalCheats,
+  shouldShowWeightReassurance,
 } from '@/lib/calories'
+import { WEIGHT_REASSURE_MESSAGE, WEIGHT_REASSURE_TOAST_MS } from '@/lib/calorieConstants'
 
 const LIST_LIMIT = 30
 const PERIODS: { value: CheatChartPeriod; label: string }[] = [
@@ -39,11 +50,19 @@ export default function WeightPage() {
   const [goal, setGoal] = useState<GoalPlanRow | null>(null)
   const [wants, setWants] = useState<MonthlyWantRow[]>([])
   const [heartyLogs, setHeartyLogs] = useState<MealLogRow[]>([])
+  // 順調の判定（15.1）に使う今月のメシため・うごための記録（今日の画面と同じ取り方）
+  const [monthMealLogs, setMonthMealLogs] = useState<MealLogRow[]>([])
+  const [monthExerciseLogs, setMonthExerciseLogs] = useState<ExerciseLogRow[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+  const clearToast = useCallback(() => setToast(null), [])
   const [period, setPeriod] = useState<CheatChartPeriod>('month')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const today = formatDateJST(new Date())
+  const year = Number(today.slice(0, 4))
+  const month = Number(today.slice(5, 7))
+  const monthStart = `${today.slice(0, 7)}-01`
   const recordRange = getRecordableDateRange(today)
   const [viewDate, setViewDate] = useState(today)
 
@@ -57,21 +76,27 @@ export default function WeightPage() {
         { data: goalData, error: goalErr },
         { data: wantData, error: wantErr },
         { data: heartyData, error: heartyErr },
+        { data: mealData, error: mealErr },
+        { data: exerciseData, error: exerciseErr },
       ] = await Promise.all([
         supabase.from('weight_logs').select('*').eq('user_id', user.id).order('measured_at', { ascending: true }),
         supabase.from('goal_plans').select('*').eq('user_id', user.id).eq('is_active', true).maybeSingle(),
         supabase.from('monthly_wants').select('*').eq('user_id', user.id).eq('is_active', true),
         supabase.from('meal_logs').select('*').eq('user_id', user.id).eq('choice', 'hearty'),
+        supabase.from('meal_logs').select('*').eq('user_id', user.id).gte('log_date', monthStart).lte('log_date', today),
+        supabase.from('exercise_logs').select('*').eq('user_id', user.id).gte('log_date', monthStart).lte('log_date', today),
       ])
-      const firstError = loadErr ?? goalErr ?? wantErr ?? heartyErr
+      const firstError = loadErr ?? goalErr ?? wantErr ?? heartyErr ?? mealErr ?? exerciseErr
       if (firstError) setError(firstError.message)
       setLogs((data as WeightLog[]) || [])
       setGoal((goalData as GoalPlanRow) ?? null)
       setWants((wantData as MonthlyWantRow[]) || [])
       setHeartyLogs((heartyData as MealLogRow[]) || [])
+      setMonthMealLogs((mealData as MealLogRow[]) || [])
+      setMonthExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
       setLoading(false)
     })
-  }, [router])
+  }, [router, monthStart, today])
 
   const byDate = useMemo(() => new Map(logs.map((l) => [l.measured_at, l])), [logs])
   const recent = useMemo(() => [...logs].reverse().slice(0, LIST_LIMIT), [logs])
@@ -88,17 +113,49 @@ export default function WeightPage() {
     () => buildCheatWeightChart({ period, today, weightLogs: logs, wants, mealLogs: heartyLogs, slotTargets }),
     [period, today, logs, wants, heartyLogs, slotTargets]
   )
+  // 順調（15.1）：今日の画面の「◯月のメシため」と同じ目標・貯まったpt
+  const onPace = useMemo(() => {
+    const replacedMealKeys = getReplacedMealKeys(wants)
+    const ordered = orderZeroCalCheats(
+      buildGaugeCheats(
+        expandCheatsForMonth(wants, year, month, slotTargets, today),
+        monthMealLogs,
+        year,
+        month,
+        replacedMealKeys
+      )
+    )
+    const earned = calcMonthEarnedBreakdown({
+      year,
+      month,
+      today,
+      mealLogs: monthMealLogs,
+      exerciseLogs: monthExerciseLogs,
+      replacedMealKeys,
+    })
+    return isOnPaceToday(today, calcZeroCalStatus(ordered, earned.totalPt).totalPt, earned.totalPt)
+  }, [wants, year, month, slotTargets, today, monthMealLogs, monthExerciseLogs])
+  // 3週続けて増えている（15.3）
+  const rising = useMemo(() => isWeightRisingThreeWeeks(logs, today), [logs, today])
   const gap = useMemo(
     () => (goal ? calcTargetGap(average.avgKg, buildTargetLine(goal), today) : null),
     [goal, average.avgKg, today]
   )
 
+  // 体重を保存したら、上がった日のひと言（15.3）
   function upsertLocal(row: WeightLog) {
-    setLogs((prev) =>
-      [...prev.filter((l) => l.measured_at !== row.measured_at), row].sort((a, b) =>
-        a.measured_at.localeCompare(b.measured_at)
-      )
+    const next = [...logs.filter((l) => l.measured_at !== row.measured_at), row].sort((a, b) =>
+      a.measured_at.localeCompare(b.measured_at)
     )
+    setLogs(next)
+    const show = shouldShowWeightReassurance({
+      logs: next,
+      date: row.measured_at,
+      weightKg: Number(row.weight_kg),
+      onPace,
+      risingThreeWeeks: isWeightRisingThreeWeeks(next, today),
+    })
+    if (show) setToast(WEIGHT_REASSURE_MESSAGE)
   }
 
   const prevDate = addDaysToDateStr(viewDate, -1)
@@ -140,7 +197,7 @@ export default function WeightPage() {
                       <span className={weekOverWeek.diffKg < -0.05 ? 'text-amber-400 font-bold' : 'text-stone-300 font-bold'}>
                         {formatWeightChange(weekOverWeek.diffKg)}
                       </span>
-                      {weekOverWeek.diffKg > 0.05 && (
+                      {weekOverWeek.diffKg > 0.05 && !rising && (
                         <span className="block text-stone-500 text-xs mt-1">日々のぶれは気にせず、流れで見ていこう</span>
                       )}
                       {weekOverWeek.isReference && (
@@ -149,6 +206,14 @@ export default function WeightPage() {
                     </p>
                   )}
                 </>
+              )}
+              {rising && (
+                <p className="text-stone-400 text-xs mt-4 pt-3 border-t border-stone-800">
+                  3週続けて少しずつ増えています。必要量が高めかもしれません
+                  <button type="button" onClick={() => router.push('/setup')} className="block mx-auto text-amber-400 mt-1.5">
+                    設定を見直す
+                  </button>
+                </p>
               )}
             </section>
 
@@ -273,6 +338,8 @@ export default function WeightPage() {
           </main>
         )}
       </div>
+
+      {toast && <Toast message={toast} durationMs={WEIGHT_REASSURE_TOAST_MS} onDone={clearToast} />}
 
       <BottomNav active="weight" />
     </div>

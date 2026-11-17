@@ -72,7 +72,13 @@ import {
   calcZeroCalStatus,
   detectNewlyZeroed,
   describeZeroCalHeadline,
+  describeZeroCalSubline,
+  getZeroCalStage,
   buildGaugeMarkers,
+  isOnPace,
+  isOnPaceToday,
+  shouldShowWeightReassurance,
+  isWeightRisingThreeWeeks,
   getGaugeCheatName,
   calcMonthWeightChange,
   describeMonthWeightChange,
@@ -94,6 +100,7 @@ import { CHEAT_ITEMS } from '@/lib/cheatItems'
 import { FOOD_ITEM_MAP } from '@/lib/foodItems'
 import { MEAL_EXAMPLES } from '@/lib/mealExamples'
 import { REWARD_ITEMS } from '@/lib/rewardItems'
+import { GAUGE_MARKER_MAX } from '@/lib/calorieConstants'
 
 // 2026-11 は30日。2026-11-01 は日曜、2026-11-02 は月曜
 const nov = (d: number) => new Date(2026, 10, d)
@@ -1186,7 +1193,7 @@ describe('食べものの辞書と例の合計kcal（13.2）', () => {
   })
 })
 
-describe('ゼロカロ化（13.3）', () => {
+describe('なかったことに（13.3・15.4）', () => {
   const wantRow = (over: Partial<MonthlyWantRow>): MonthlyWantRow => ({
     id: over.label ?? 'x',
     user_id: 'u',
@@ -1276,14 +1283,47 @@ describe('ゼロカロ化（13.3）', () => {
     expect(calcZeroCalStatus(cheats, -100).zeroedPt).toBe(0)
   })
 
-  it('見出し：0kcal化済みだけを「・」でつなぐ。4件以上は「ほか◯件」', () => {
-    const cheats = [dated('ワイン1本', '2026-11-03', 550), dated('ハイボール1杯', '2026-11-04', 80), dated('ケーキ', '2026-11-10', 350)]
-    expect(describeZeroCalHeadline(calcZeroCalStatus(cheats, 630))).toBe('ワイン1本・ハイボール1杯、実質0kcalで ごちそうさまでした')
-    expect(describeZeroCalHeadline(calcZeroCalStatus(cheats, 100))).toBe('最初のチートまで、あとメシため3回')
-    const many = [...cheats, dated('大福', '2026-11-11', 240), dated('パフェ', '2026-11-12', 600)]
-    expect(describeZeroCalHeadline(calcZeroCalStatus(many, 5000))).toBe(
-      'ワイン1本・ハイボール1杯・ケーキほか2件、実質0kcalで ごちそうさまでした'
-    )
+  it('見出しとゲージの下の行（15.4）：チート名は出さず kcal（3桁区切り）で見せる', () => {
+    const cheats = [dated('ワイン1本', '2026-11-03', 2000), dated('ハイボール1杯', '2026-11-04', 1500), dated('ケーキ', '2026-11-10', 450)]
+    const empty = calcZeroCalStatus(cheats, 0)
+    expect(getZeroCalStage(empty)).toBe('empty')
+    expect(describeZeroCalHeadline(empty)).toBe('今月のチート 3,950kcal')
+    expect(describeZeroCalSubline(empty)).toBe('メシためで、なかったことにしていこう')
+
+    const partial = calcZeroCalStatus(cheats, 3120)
+    expect(getZeroCalStage(partial)).toBe('partial')
+    expect(describeZeroCalHeadline(partial)).toBe('3,120kcal、なかったことに。')
+    expect(describeZeroCalSubline(partial)).toBe('あと 830kcal')
+
+    const full = calcZeroCalStatus(cheats, 3950) // ちょうど目標も「全部」
+    expect(getZeroCalStage(full)).toBe('full')
+    expect(describeZeroCalHeadline(full)).toBe('3,950kcal、ぜんぶなかったことに。')
+    expect(describeZeroCalSubline(full)).toBeNull()
+    expect(describeZeroCalHeadline(calcZeroCalStatus(cheats, 4410))).toBe('3,950kcal、ぜんぶなかったことに。')
+
+    const none = calcZeroCalStatus([], 300)
+    expect(getZeroCalStage(none)).toBe('none')
+    expect(describeZeroCalSubline(none)).toBeNull()
+  })
+
+  it('ゲージのアイコン（15.4）：まとめたあとが5個まではそのまま、6個以上は0kcal化済みの位置に1つだけ', () => {
+    const beer = (date: string) =>
+      dated('ビール', date, 100, { items: [{ genre: 'alcohol', name: 'ビール', kcal: 100, qty: 1 }] })
+    const five = ['2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05'].map(beer)
+    expect(buildGaugeMarkers(calcZeroCalStatus(five, 300))).toHaveLength(5)
+
+    const six = [...five, dated('ケーキ', '2026-11-06', 100)]
+    const one = buildGaugeMarkers(calcZeroCalStatus(six, 300))
+    expect(one).toHaveLength(1)
+    expect(one[0]).toMatchObject({ ratio: 0.5, count: 3, zeroed: true, emoji: buildGaugeMarkers(calcZeroCalStatus([beer('2026-11-01')], 0))[0].emoji })
+    // いちばん多い絵文字：ケーキ（★）が多いとき
+    const cakes = [beer('2026-11-01'), ...['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'].map((d) => dated('ケーキ', d, 100))]
+    expect(buildGaugeMarkers(calcZeroCalStatus(cakes, 600))[0]).toMatchObject({ emoji: '★', count: 6, ratio: 1 })
+    // 0kcal化済みが0件なら出さない
+    expect(buildGaugeMarkers(calcZeroCalStatus(six, 0))).toEqual([])
+    // 上限は引数でも変えられる
+    expect(buildGaugeMarkers(calcZeroCalStatus(six, 300), undefined, 6)).toHaveLength(6)
+    expect(GAUGE_MARKER_MAX).toBe(5)
   })
 
   it('新たに0kcal化済みになったチート（記録の前後のpt）。複数なら最後の1件', () => {
@@ -1629,5 +1669,103 @@ describe('期間を指定した体重変化（14.4）', () => {
   it('表記：0.1kg未満は「変わらず」', () => {
     expect(describeWeightChangeShort(0.05)).toBe('体重 変わらず')
     expect(describeWeightChangeShort(0.2)).toBe('体重 0.2kg増')
+  })
+})
+
+describe('順調（15.1）', () => {
+  it('貯まったpt ≧ ペースの目印（目標 × 何日目 ÷ 月の日数を四捨五入）、かつ貯まったpt > 0', () => {
+    // 3000 × 10 ÷ 30 = 1000
+    expect(isOnPace({ targetPt: 3000, earnedPt: 1000, dayOfMonth: 10, daysInMonth: 30 })).toBe(true)
+    expect(isOnPace({ targetPt: 3000, earnedPt: 999, dayOfMonth: 10, daysInMonth: 30 })).toBe(false)
+    // 1000 × 1 ÷ 30 = 33.3 → 33
+    expect(isOnPace({ targetPt: 1000, earnedPt: 33, dayOfMonth: 1, daysInMonth: 30 })).toBe(true)
+    expect(isOnPace({ targetPt: 1000, earnedPt: 32, dayOfMonth: 1, daysInMonth: 30 })).toBe(false)
+  })
+
+  it('貯まったpt 0 は順調ではない。目標0の月は貯まったpt > 0 なら順調', () => {
+    expect(isOnPace({ targetPt: 0, earnedPt: 0, dayOfMonth: 10, daysInMonth: 30 })).toBe(false)
+    expect(isOnPace({ targetPt: 0, earnedPt: 150, dayOfMonth: 10, daysInMonth: 30 })).toBe(true)
+    expect(isOnPace({ targetPt: 100, earnedPt: 0, dayOfMonth: 1, daysInMonth: 31 })).toBe(false)
+  })
+
+  it('今日の日付から月の日数と何日目かを出す', () => {
+    // 2026-11-15：3000 × 15 ÷ 30 = 1500
+    expect(isOnPaceToday('2026-11-15', 3000, 1500)).toBe(true)
+    expect(isOnPaceToday('2026-11-15', 3000, 1499)).toBe(false)
+    // 2026-02-14：2800 × 14 ÷ 28 = 1400
+    expect(isOnPaceToday('2026-02-14', 2800, 1400)).toBe(true)
+    expect(isOnPaceToday('2026-02-14', 2800, 1399)).toBe(false)
+  })
+})
+
+describe('体重が上がった日のひと言（15.3）', () => {
+  const w = (measured_at: string, weight_kg: number) => ({ measured_at, weight_kg })
+  // 11/10〜11/16 に 100kg が3件
+  const base = [w('2026-11-10', 100), w('2026-11-13', 100), w('2026-11-16', 100)]
+  const input = (over: Partial<Parameters<typeof shouldShowWeightReassurance>[0]>) => ({
+    logs: base,
+    date: '2026-11-17',
+    weightKg: 100.5,
+    onPace: true,
+    risingThreeWeeks: false,
+    ...over,
+  })
+
+  it('前日までの7日間の平均より0.5kg以上高く、順調なら出す', () => {
+    expect(shouldShowWeightReassurance(input({}))).toBe(true)
+    expect(shouldShowWeightReassurance(input({ weightKg: 100.4 }))).toBe(false)
+  })
+
+  it('その日の記録は平均に含めない（保存後の記録を渡しても同じ）', () => {
+    expect(shouldShowWeightReassurance(input({ logs: [...base, w('2026-11-17', 100.5)] }))).toBe(true)
+  })
+
+  it('前日までの7日間の記録が3件未満なら出さない（8日前の記録は数えない）', () => {
+    const logs = [w('2026-11-09', 100), w('2026-11-13', 100), w('2026-11-16', 100)]
+    expect(shouldShowWeightReassurance(input({ logs }))).toBe(false)
+    expect(shouldShowWeightReassurance(input({ logs: [] }))).toBe(false)
+  })
+
+  it('順調でないとき・3週続けて増えているときは出さない', () => {
+    expect(shouldShowWeightReassurance(input({ onPace: false }))).toBe(false)
+    expect(shouldShowWeightReassurance(input({ risingThreeWeeks: true }))).toBe(false)
+  })
+
+  it('過去の日に保存したときは、その日の前日までの7日間で見る', () => {
+    const logs = [w('2026-11-05', 100), w('2026-11-07', 100), w('2026-11-09', 100), w('2026-11-14', 103)]
+    expect(shouldShowWeightReassurance(input({ logs, date: '2026-11-10', weightKg: 100.6 }))).toBe(true)
+  })
+})
+
+describe('3週続けて増えている（15.3）', () => {
+  // 毎日記録。7日ごとに step kg ずつ上がる（前週比 = step）
+  const daily = (from: string, days: number, kgAt: (i: number) => number) =>
+    Array.from({ length: days }, (_, i) => ({ measured_at: addDaysToDateStr(from, i), weight_kg: kgAt(i) }))
+  const today = '2026-11-28'
+  const from = addDaysToDateStr(today, -27) // 14日前の前週比まで出せる4週間
+
+  it('今日・7日前・14日前の前週比がどれも0.1kg以上の増なら true', () => {
+    const logs = daily(from, 28, (i) => 100 + Math.floor(i / 7) * 0.1)
+    expect(isWeightRisingThreeWeeks(logs, today)).toBe(true)
+  })
+
+  it('四捨五入で0.1kgに届かない週があれば false', () => {
+    const logs = daily(from, 28, (i) => 100 + Math.floor(i / 7) * 0.04)
+    expect(isWeightRisingThreeWeeks(logs, today)).toBe(false)
+  })
+
+  it('1回でも減っている・変わらずの週があれば false', () => {
+    const steps = [0, 0.2, 0.2, 0.2]
+    const steps2 = [0, 0.2, 0, 0.2]
+    const kg = (s: number[]) => (i: number) => 100 + s.slice(0, Math.floor(i / 7) + 1).reduce((a, b) => a + b, 0)
+    expect(isWeightRisingThreeWeeks(daily(from, 28, kg(steps)), today)).toBe(true)
+    expect(isWeightRisingThreeWeeks(daily(from, 28, kg(steps2)), today)).toBe(false)
+  })
+
+  it('参考値（どれかの7日間が3件未満）や記録が足りないときは false', () => {
+    const logs = daily(from, 28, (i) => 100 + Math.floor(i / 7) * 0.2).filter((l, i) => i >= 6 || i === 0) // 最初の7日間は2件だけ
+    expect(isWeightRisingThreeWeeks(logs, today)).toBe(false)
+    expect(isWeightRisingThreeWeeks(daily(addDaysToDateStr(today, -20), 21, (i) => 100 + i * 0.1), today)).toBe(false)
+    expect(isWeightRisingThreeWeeks([], today)).toBe(false)
   })
 })

@@ -36,6 +36,7 @@ import {
   DatedCheatEntry,
   ZeroCalEntry,
   ZeroCalStatus,
+  ZeroCalStage,
   GaugeMarker,
   RewardPick,
   LogDay,
@@ -82,8 +83,11 @@ import {
   CHART_PERIOD_DAYS,
   CHART_Y_PADDING_KG,
   HEALTH_MILESTONES,
-  ZERO_CAL_HEADLINE_MAX,
   GAUGE_MARKER_MIN_GAP,
+  GAUGE_MARKER_MAX,
+  WEIGHT_REASSURE_DIFF_KG,
+  WEIGHT_RISING_WEEKS,
+  WEIGHT_RISING_MIN_KG,
   REWARD_MIN_KCAL,
   LOG_DAYS,
   CHART_WEIGHT_HALF_RANGE_KG,
@@ -865,6 +869,23 @@ export function calcMeshipoGauge(input: {
   }
 }
 
+// --- 15.1. 順調（貯まったpt ≧ ペースの目印、かつ 貯まったpt > 0）。目標0の月は貯まったpt > 0 なら順調 ---
+
+export function isOnPace(input: {
+  targetPt: number
+  earnedPt: number
+  dayOfMonth: number // 今日が何日目か（今日を含む）
+  daysInMonth: number
+}): boolean {
+  return input.earnedPt > 0 && calcMeshipoGauge(input).onPace
+}
+
+// 今日（日本時間 YYYY-MM-DD）の月で判定する
+export function isOnPaceToday(today: string, targetPt: number, earnedPt: number): boolean {
+  const { to } = getMonthDateRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)))
+  return isOnPace({ targetPt, earnedPt, dayOfMonth: Number(today.slice(8, 10)), daysInMonth: Number(to.slice(8, 10)) })
+}
+
 // --- 12-5. 週の振り返り（月曜〜日曜・日本時間。月をまたいでも日付で集計する） ---
 
 // 0=日 … 6=土
@@ -941,7 +962,7 @@ export function describeWeekEarned(pt: number): string {
   return `今週は+${pt}pt！${eq.label}ぶん貯まりました${eq.emoji}`
 }
 
-// --- 13.3. ゼロカロ化（pt ≒ kcal。貯まったpt = 実質0kcalにできたkcal） ---
+// --- 13.3・15.4. なかったことに（pt ≒ kcal。貯まったpt = 実質0kcalにできたkcal） ---
 
 const shortDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
 
@@ -1027,21 +1048,49 @@ export function detectNewlyZeroed(
   return added.length > 0 ? added[added.length - 1].entry : null
 }
 
-// 見出し（13.3）
+const formatKcal = (kcal: number) => kcal.toLocaleString('ja-JP')
+
+// カードの状態（15.4）：none = チート未登録 / empty = 貯まったpt 0 / partial = 途中 / full = 全部
+export function getZeroCalStage(status: ZeroCalStatus): ZeroCalStage {
+  if (status.entries.length === 0) return 'none'
+  if (status.earnedPt <= 0) return 'empty'
+  return status.earnedPt < status.totalPt ? 'partial' : 'full'
+}
+
+// 見出し（15.4）。チート名は出さず kcal で見せる
 export function describeZeroCalHeadline(status: ZeroCalStatus): string {
-  if (status.entries.length === 0) return '食べたいものを先に決めよう'
-  const zeroed = status.entries.filter((e) => e.zeroed).map((e) => getGaugeCheatName(e.entry))
-  if (zeroed.length === 0) return `最初のチートまで、あと${MEAL_CHOICE_LABELS.light}${status.next?.tamemeshiNeeded ?? 0}回`
-  const names =
-    zeroed.length > ZERO_CAL_HEADLINE_MAX
-      ? `${zeroed.slice(0, ZERO_CAL_HEADLINE_MAX).join('・')}ほか${zeroed.length - ZERO_CAL_HEADLINE_MAX}件`
-      : zeroed.join('・')
-  return `${names}、実質0kcalで ごちそうさまでした`
+  switch (getZeroCalStage(status)) {
+    case 'none':
+      return '食べたいものを先に決めよう'
+    case 'empty':
+      return `今月のチート ${formatKcal(status.totalPt)}kcal`
+    case 'partial':
+      return `${formatKcal(status.zeroedPt)}kcal、なかったことに。`
+    case 'full':
+      return `${formatKcal(status.zeroedPt)}kcal、ぜんぶなかったことに。`
+  }
+}
+
+// ゲージの下の行（15.4）。全部のとき（ごほうびの行を出す）とチート未登録のときは null
+export function describeZeroCalSubline(status: ZeroCalStatus): string | null {
+  switch (getZeroCalStage(status)) {
+    case 'empty':
+      return `${MEAL_CHOICE_LABELS.light}で、なかったことにしていこう`
+    case 'partial':
+      return `あと ${formatKcal(status.totalPt - status.earnedPt)}kcal`
+    default:
+      return null
+  }
 }
 
 // ゲージのアイコン。位置 = 累計コスト ÷ 目盛りの最大（max(合計, 貯まったpt)。14.2）
 // 前のアイコンとの間が minGap 未満なら1つにまとめる（絵文字は最初の1件）
-export function buildGaugeMarkers(status: ZeroCalStatus, minGap = GAUGE_MARKER_MIN_GAP): GaugeMarker[] {
+// まとめたあとが maxMarkers より多いときは、0kcal化済みの位置に1つだけ（いちばん多い絵文字 ×0kcal化済みの件数。15.4）
+export function buildGaugeMarkers(
+  status: ZeroCalStatus,
+  minGap = GAUGE_MARKER_MIN_GAP,
+  maxMarkers = GAUGE_MARKER_MAX
+): GaugeMarker[] {
   if (status.totalPt <= 0 || status.scalePt <= 0) return []
   const markers: GaugeMarker[] = []
   for (const e of status.entries) {
@@ -1055,7 +1104,25 @@ export function buildGaugeMarkers(status: ZeroCalStatus, minGap = GAUGE_MARKER_M
     }
     markers.push({ ratio, emoji: getGaugeCheatEmoji(e.entry), count: 1, zeroed: e.zeroed })
   }
-  return markers
+  if (markers.length <= maxMarkers) return markers
+
+  const zeroed = status.entries.filter((e) => e.zeroed)
+  if (zeroed.length === 0) return []
+  // いちばん多い絵文字（同じ数なら先に出てきたもの）
+  const counts = new Map<string, number>()
+  for (const e of zeroed) {
+    const emoji = getGaugeCheatEmoji(e.entry)
+    counts.set(emoji, (counts.get(emoji) ?? 0) + 1)
+  }
+  let emoji = ''
+  let best = 0
+  for (const [k, n] of counts) {
+    if (n > best) {
+      emoji = k
+      best = n
+    }
+  }
+  return [{ ratio: status.zeroedPt / status.scalePt, emoji, count: zeroed.length, zeroed: true }]
 }
 
 // --- 14.2. ごほうび（目標を超えて貯めた分。今月限り） ---
@@ -1380,6 +1447,34 @@ export function calcWeekOverWeek(logs: WeightPoint[], date: string): WeekOverWee
   const before = calcWeightAverage(logs, addDaysToDateStr(date, -WEIGHT_AVG_DAYS))
   if (now.avgKg === null || before.avgKg === null) return { diffKg: null, isReference: true }
   return { diffKg: now.avgKg - before.avgKg, isReference: now.isReference || before.isReference }
+}
+
+// --- 15.3. 体重が上がった日のひと言 ---
+
+// 前週比が今日・7日前・14日前の3回続けて0.1kg以上の増（四捨五入して0.1kg単位）で、どれも参考値でない
+export function isWeightRisingThreeWeeks(logs: WeightPoint[], today: string): boolean {
+  for (let i = 0; i < WEIGHT_RISING_WEEKS; i++) {
+    const { diffKg, isReference } = calcWeekOverWeek(logs, addDaysToDateStr(today, -WEIGHT_AVG_DAYS * i))
+    if (diffKg === null || isReference) return false
+    if (Math.round(diffKg * 10) / 10 < WEIGHT_RISING_MIN_KG) return false
+  }
+  return true
+}
+
+// 保存した体重が、その日の前日までの7日間の平均（3件以上。その日の記録は含めない）より0.5kg以上高く、
+// かつ順調のときだけ true。3週続けて増えているときは出さない
+export function shouldShowWeightReassurance(input: {
+  logs: WeightPoint[]
+  date: string // 保存した日
+  weightKg: number // 保存した体重
+  onPace: boolean
+  risingThreeWeeks: boolean
+}): boolean {
+  const { logs, date, weightKg, onPace, risingThreeWeeks } = input
+  if (!onPace || risingThreeWeeks) return false
+  const prev = calcWeightAverage(logs, addDaysToDateStr(date, -1))
+  if (prev.avgKg === null || prev.isReference) return false
+  return Math.round((weightKg - prev.avgKg) * 1000) / 1000 >= WEIGHT_REASSURE_DIFF_KG
 }
 
 // 前週比の表記（0.1kg単位）。記号は使わない：「0.4kg減」「0.3kg増」「変わらず」

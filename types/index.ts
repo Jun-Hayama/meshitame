@@ -278,7 +278,7 @@ export interface MeshipoGauge {
   paceRatio: number // ペースの目印の位置（0〜1）
 }
 
-// ===== v2.3 ゼロカロ化（13.3） =====
+// ===== v2.3 なかったことに（13.3・15.4） =====
 
 // チートを並び順に累計したときの1件
 export interface ZeroCalEntry {
@@ -290,13 +290,16 @@ export interface ZeroCalEntry {
 export interface ZeroCalStatus {
   entries: ZeroCalEntry[] // 並び順（日付のあるもの → 日付のないもの）
   totalPt: number // チートのコスト合計
-  earnedPt: number // 貯まったpt（= ゼロカロ化できたkcal）
-  zeroedPt: number // ゼロカロ化の表示に使う値 = min(貯まった, 合計)
+  earnedPt: number // 貯まったpt（= なかったことにできたkcal）
+  zeroedPt: number // なかったことにしたkcal = min(貯まった, 合計)
   zeroedCount: number
   next: { entry: GaugeCheatEntry; remainingPt: number; tamemeshiNeeded: number } | null // 次に0kcalになるチート
   extraPt: number // 全部済みのとき、あと追加できる分
   scalePt: number // ゲージの目盛りの最大 = max(合計, 貯まったpt)（14.2）
 }
+
+// カードの状態（15.4）：none = チート未登録 / empty = 貯まったpt 0 / partial = 途中 / full = 全部
+export type ZeroCalStage = 'none' | 'empty' | 'partial' | 'full'
 
 // ごほうび候補から選んだ一品（14.2）
 export interface RewardPick {

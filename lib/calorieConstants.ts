@@ -107,10 +107,10 @@ export const WEEK_EARNED_EQUIVALENTS = [
   { pt: 1800, label: '飲み会1回', emoji: '🍻' },
 ] as const
 
-// ゼロカロ化（13.3）：見出しに並べるチートの最大件数（それ以上は「ほか◯件」）
-export const ZERO_CAL_HEADLINE_MAX = 3
 // ゲージのアイコン：前のアイコンとの間がこれ未満（ゲージの長さに対する割合）なら1つにまとめる
 export const GAUGE_MARKER_MIN_GAP = 0.08
+// ゲージのアイコン（15.4）：まとめたあとがこれより多いときは、0kcal化済みの位置に1つだけ出す
+export const GAUGE_MARKER_MAX = 5
 
 // ごほうび（14.2）：これ未満のときは「いまなら {品名} までいけます」を出さない
 export const REWARD_MIN_KCAL = 150
@@ -122,3 +122,11 @@ export const LOG_DAYS = 14
 export const CHART_WEIGHT_HALF_RANGE_KG = 2
 // 広げるときの余白（kg）
 export const CHART_WEIGHT_EXPAND_PAD_KG = 0.2
+
+// 体重が上がった日のひと言（15.3）：前日までの7日間の平均よりこれ以上高いときに出す（kg）
+export const WEIGHT_REASSURE_DIFF_KG = 0.5
+export const WEIGHT_REASSURE_MESSAGE = '日ごとの上下は水分です。メシためが続いているので、このままで大丈夫。'
+export const WEIGHT_REASSURE_TOAST_MS = 4000
+// 3週続けて増えているとき（15.3）：今日・7日前・14日前の前週比が、どれもこれ以上の増（四捨五入して0.1kg単位）
+export const WEIGHT_RISING_WEEKS = 3
+export const WEIGHT_RISING_MIN_KG = 0.1
