@@ -93,9 +93,7 @@ import {
   describeDayExercises,
   describeShortLabel,
   getCheatLoadFrom,
-  describeCardClearedLine,
-  CHEAT_ALL_CLEARED_LINE,
-  CHEAT_BAR_EXACT_LINE,
+  isCheatCovered,
   describePlannedLine,
   describeMeshitameToast,
   describeExerciseToast,
@@ -1730,35 +1728,36 @@ describe('◯月のチート（16章 v2.6）', () => {
         expect(describeCardWayLine(0)).toBeNull()
       })
 
-      it('貯めた分がチートより多い：「ぜんぶ、なかったことに。」（16-追記 v2.6.4）', () => {
-        const s = status({ wants: [extra('2026-11-02', 200)], mealLogs: lights('2026-11-03', 3) })
-        expect(s.spareKcal).toBe(250)
-        expect(describeCardClearedLine(s)).toBe('ぜんぶ、なかったことに。')
-        expect(CHEAT_ALL_CLEARED_LINE).toBe('ぜんぶ、なかったことに。')
-        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
-        expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('over') // 縦線とその先の淡い部分は残す
-      })
+      describe('チートの kcal の横の ✓（16-追記 v2.6.5）', () => {
+        it('貯めた分がチートより多い：出す。棒は縦線とその先の淡い部分のまま', () => {
+          const s = status({ wants: [extra('2026-11-02', 200)], mealLogs: lights('2026-11-03', 3) })
+          expect(s.spareKcal).toBe(250)
+          expect(isCheatCovered(s)).toBe(true)
+          expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+          expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('over')
+        })
 
-      it('ちょうど同じ：棒の下の「ぴったり、なかったことに。」だけで、「ぜんぶ、なかったことに。」は出さない', () => {
-        const s = status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 2) })
-        expect(s.eatenKcal).toBe(300)
-        expect(s.savedKcal).toBe(300)
-        expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('exact')
-        expect(CHEAT_BAR_EXACT_LINE).toBe('ぴったり、なかったことに。')
-        expect(describeCardClearedLine(s)).toBeNull()
-        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
-      })
+        it('ちょうど同じ：出す', () => {
+          const s = status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 2) })
+          expect(s.eatenKcal).toBe(300)
+          expect(s.savedKcal).toBe(300)
+          expect(isCheatCovered(s)).toBe(true)
+          expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('exact')
+        })
 
-      it('チート0で貯めた分だけ：一番下の行は出さない', () => {
-        const s = status({ mealLogs: lights('2026-11-03', 2) })
-        expect(s.eatenKcal).toBe(0)
-        expect(describeCardClearedLine(s)).toBeNull()
-        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
-      })
+        it('貯めた分がチートより少ない：出さない', () => {
+          const s = status({ wants: [extra('2026-11-02', 400)], mealLogs: lights('2026-11-03', 1) })
+          expect(s.pendingKcal).toBe(250)
+          expect(isCheatCovered(s)).toBe(false)
+        })
 
-      it('まだの分があるとき：「ぜんぶ、なかったことに。」は出さない', () => {
-        const s = status({ wants: [extra('2026-11-02', 400)], mealLogs: lights('2026-11-03', 1) })
-        expect(describeCardClearedLine(s)).toBeNull()
+        it('チート0：貯めた分があっても出さない。一番下の行もなし', () => {
+          const s = status({ mealLogs: lights('2026-11-03', 2) })
+          expect(s.eatenKcal).toBe(0)
+          expect(isCheatCovered(s)).toBe(false)
+          expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+          expect(isCheatCovered(status({}))).toBe(false)
+        })
       })
     })
 

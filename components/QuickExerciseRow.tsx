@@ -1,6 +1,6 @@
 'use client'
 
-// 今日の記録の「うごため」（16-追記 v2.6.3・v2.6.4）。いつものうごため2つは押すとすぐ保存、［＋うごため］はうごための画面
+// 今日の記録の「うごため」（16-追記 v2.6.3〜v2.6.5）。いつものうごため2つは押すとすぐ保存、［＋ ほかのうごため］はうごための画面
 // どのうごためを出すかは pickFrequentExercises、保存は呼び出し側（今日の画面）で行う。ボタンに kcal は出さない（トーストで伝える）
 
 import { EXERCISE_SECTION_NOTE } from '@/lib/calorieConstants'
@@ -31,26 +31,29 @@ export function QuickExerciseRow({
         </h3>
         <p className="text-[11px] text-stone-600">{EXERCISE_SECTION_NOTE}</p>
       </div>
-      {summary && (
-        <p className="text-stone-400 text-xs mb-2">
-          {isToday ? '今日は' : 'この日は'} {summary}
-        </p>
-      )}
-      <div className="flex gap-2 overflow-x-auto">
-        {exercises.map((ex) => (
-          <button
-            key={ex.type}
-            type="button"
-            disabled={saving}
-            onClick={() => onQuick(ex)}
-            className={chip}
-          >
-            {EXERCISE_TYPE_EMOJI[ex.type]} {EXERCISE_TYPE_LABELS[ex.type]} {ex.minutes}分
+      {/* 朝・昼・夜や追加チートの行と同じ枠（16-追記 v2.6.5） */}
+      <div className="bg-stone-900 rounded-2xl px-4 py-3">
+        {summary && (
+          <p className="text-stone-400 text-xs mb-2">
+            {isToday ? '今日は' : 'この日は'} {summary}
+          </p>
+        )}
+        <div className="flex gap-2 overflow-x-auto">
+          {exercises.map((ex) => (
+            <button
+              key={ex.type}
+              type="button"
+              disabled={saving}
+              onClick={() => onQuick(ex)}
+              className={chip}
+            >
+              {EXERCISE_TYPE_EMOJI[ex.type]} {EXERCISE_TYPE_LABELS[ex.type]} {ex.minutes}分
+            </button>
+          ))}
+          <button type="button" onClick={onMore} className={chip}>
+            ＋ ほかの{EXERCISE_LABEL}
           </button>
-        ))}
-        <button type="button" onClick={onMore} className={chip}>
-          ＋{EXERCISE_LABEL}
-        </button>
+        </div>
       </div>
     </div>
   )

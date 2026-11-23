@@ -1046,8 +1046,6 @@ export function describeShortLabel(pendingKcal: number): string {
   return `あと${formatKcal(pendingKcal)}kcal`
 }
 
-export const CHEAT_BAR_EXACT_LINE = 'ぴったり、なかったことに。'
-
 // いちばん手軽に届く方法：まだの分が300kcal以下なら、ウォーキングで届く分数（10分単位で切り上げ）
 export function pickEasiestWay(pendingKcal: number): EasiestWay | null {
   if (pendingKcal <= 0 || pendingKcal > EASY_WALK_MAX_KCAL) return null
@@ -1120,13 +1118,9 @@ export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、�
 // カードでは使わない（16-追記 v2.6.2）。トースト（体重のトーストなど）でだけ使う
 export const CHEAT_CARD_ON_TRACK = '好きなものを食べながら、ちゃんと痩せてます'
 
-// 貯めた分がチートを超えたときの一番下の行（16-追記 v2.6.4）。食べることはすすめない
-export const CHEAT_ALL_CLEARED_LINE = 'ぜんぶ、なかったことに。'
-
-// カードの一番下の「ぜんぶ、なかったことに。」：チートが1以上で、貯めた分がチートより多いときだけ
-// ちょうど同じときは棒の下の「ぴったり、なかったことに。」だけ、チート0のときは何も出さない
-export function describeCardClearedLine(status: Pick<MonthCheatStatus, 'eatenKcal' | 'spareKcal'>): string | null {
-  return status.eatenKcal > 0 && status.spareKcal > 0 ? CHEAT_ALL_CLEARED_LINE : null
+// カードのチートの kcal の横の ✓（16-追記 v2.6.5）：チートが1以上で、貯めた分がチート以上（まだの分0）のときだけ
+export function isCheatCovered(status: Pick<MonthCheatStatus, 'eatenKcal' | 'pendingKcal'>): boolean {
+  return status.eatenKcal > 0 && status.pendingKcal === 0
 }
 
 // 「28日の焼肉は、もう準備OK」／「28日の焼肉まで、あと450kcal」

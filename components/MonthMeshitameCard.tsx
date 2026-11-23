@@ -1,19 +1,18 @@
 'use client'
 
-// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2〜v2.6.4）。計算は lib/calories.ts の関数で済ませて出すだけ
+// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2〜v2.6.5）。計算は lib/calories.ts の関数で済ませて出すだけ
 // 1本の棒（全体 = チートと貯めた分の大きいほう）。カード全体を押すとログ（/log）へ。中のボタンはボタンの動きを優先する
 
 import type { ReactNode } from 'react'
 import {
-  CHEAT_BAR_EXACT_LINE,
   CHEAT_CARD_INTRO,
   buildCheatHints,
   calcCheatCardBar,
-  describeCardClearedLine,
   describeCardWayLine,
   describeCheatHeadline,
   describePlannedLine,
   describeShortLabel,
+  isCheatCovered,
   pickCheatEquivalent,
 } from '@/lib/calories'
 import { EXERCISE_EMOJI, MEAL_CHOICE_EMOJI, type CheatHints, type MonthCheatStatus } from '@/types'
@@ -64,7 +63,7 @@ export function MonthMeshitameCard({
   const headline = describeCheatHeadline(pickCheatEquivalent(status), monthWeightDiffKg)
   const wayLine = describeCardWayLine(status.pendingKcal)
   const hints = buildCheatHints(status.pendingKcal)
-  const clearedLine = describeCardClearedLine(status)
+  const covered = isCheatCovered(status)
   const { tamemeshiCount, exerciseCount } = status.earned
 
   return (
@@ -89,7 +88,15 @@ export function MonthMeshitameCard({
         <div className="mt-3 mb-3">
           <p className="flex justify-between text-sm mb-1.5">
             <span className="text-stone-400 text-xs">チート</span>
-            <span className="text-stone-200">{kcal(status.eatenKcal)}</span>
+            <span className="text-stone-200">
+              {kcal(status.eatenKcal)}
+              {/* 貯めた分がチート以上（16-追記 v2.6.5） */}
+              {covered && (
+                <span aria-label="なかったことに" className="text-amber-400 text-xs font-bold ml-1">
+                  ✓
+                </span>
+              )}
+            </span>
           </p>
           <div className="relative">
             <div className="relative h-3 bg-stone-800 rounded-full overflow-hidden">
@@ -132,7 +139,6 @@ export function MonthMeshitameCard({
               <span className="text-amber-400 text-xs font-bold shrink-0">{describeShortLabel(status.pendingKcal)}</span>
             )}
           </div>
-          {bar.kind === 'exact' && <p className="text-amber-400 text-sm font-bold mt-3">{CHEAT_BAR_EXACT_LINE}</p>}
         </div>
       ) : (
         <p className="text-stone-300 text-sm mt-3">{CHEAT_CARD_INTRO}</p>
@@ -162,9 +168,6 @@ export function MonthMeshitameCard({
           )}
         </div>
       )}
-
-      {/* 貯めた分がチートより多い（16-追記 v2.6.4）：「ぜんぶ、なかったことに。」だけ。食べることはすすめない */}
-      {clearedLine && <p className="text-amber-400 text-sm font-bold">{clearedLine}</p>}
 
       {plan && (
         <p className={`text-xs mt-3 pt-3 border-t border-stone-800 ${plan.ready ? 'text-amber-400' : 'text-stone-400'}`}>
