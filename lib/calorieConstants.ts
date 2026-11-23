@@ -125,8 +125,26 @@ export const WEIGHT_RISING_MIN_KG = 0.1
 // 持ち越し（v2.6.1）：持ち越しはその前の月の持ち越しで決まるので、この月数だけさかのぼって順に計算する
 // （いちばん古い月の持ち越しは0とする。記録はこの月数前の月の初日から読む）
 export const CARRYOVER_LOOKBACK_MONTHS = 3
-// カード A の絵文字：まとめたあとがこれ以上なら、いちばん多い絵文字 × 件数の1つだけ出す
-export const PENDING_EMOJI_MAX_GROUPS = 6
 // チートを足す画面の「よく食べるもの」：直近この日数に記録した回数の多い順で、この数まで
 export const FREQUENT_ITEM_DAYS = 60
 export const FREQUENT_ITEM_MAX = 6
+
+// ◯月のチートのカード（16-追記 v2.6.2）
+// 棒の足りない部分は、どんなに小さくても棒の幅のこの割合以上で描く
+export const CHEAT_BAR_SHORT_MIN_RATIO = 0.08
+// まだの分がこれ以下なら「🚶 ◯分歩けば届きます」を出す（kcal）。分数はこの単位で切り上げ
+export const EASY_WALK_MAX_KCAL = 300
+export const EASY_WALK_STEP_MINUTES = 10
+// 換算の品がないとき（品なしの🔥チートだけ）に使う辞書の品
+export const CHEAT_EQUIVALENT_FALLBACK_FOOD = 'ramen_shoyu' as const
+// ヒントのシートの「ちょっとしたコツ」（全部出す）
+export const CHEAT_HINT_TIPS = [
+  '飲み会の次の日の朝を、メシためにする',
+  'ひと駅歩くと、だいたい15分（75kcal）',
+  '夜をメシためにすると、翌朝の体重も軽くなりやすい',
+  '買い物は、ひとつ先のお店まで歩いてみる',
+] as const
+
+// 「今日うごく？」の行（16-追記 v2.6.2）：1タップで記録する時間（分）と、取り消しを出しておく時間
+export const QUICK_EXERCISE_MINUTES = 30
+export const UNDO_TOAST_MS = 5000

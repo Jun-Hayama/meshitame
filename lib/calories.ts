@@ -46,6 +46,10 @@ import {
   CheatChartBar,
   CheatWeightPoint,
   CheatWeightChartData,
+  CheatEquivalent,
+  CheatCardBar,
+  EasiestWay,
+  CheatHints,
 } from '@/types'
 import {
   WANT_KIND_EMOJI,
@@ -53,6 +57,7 @@ import {
   MEAL_CHOICE_EMOJI,
   MEAL_CHOICE_LABELS,
   EXERCISE_TYPE_LABELS,
+  EXERCISE_TYPE_EMOJI,
   EXERCISE_EMOJI,
   EXERCISE_LABEL,
 } from '@/types'
@@ -89,11 +94,14 @@ import {
   CHART_WEIGHT_HALF_RANGE_KG,
   CHART_WEIGHT_EXPAND_PAD_KG,
   CARRYOVER_LOOKBACK_MONTHS,
-  PENDING_EMOJI_MAX_GROUPS,
   FREQUENT_ITEM_DAYS,
   FREQUENT_ITEM_MAX,
+  CHEAT_BAR_SHORT_MIN_RATIO,
+  EASY_WALK_MAX_KCAL,
+  EASY_WALK_STEP_MINUTES,
+  CHEAT_EQUIVALENT_FALLBACK_FOOD,
 } from '@/lib/calorieConstants'
-import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
+import { CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
   MEAL_EXAMPLES,
   MEAL_EXAMPLE_RANGE,
@@ -962,57 +970,153 @@ export function getCheatEmoji(cheat: MonthCheat): string {
   return getCheatRowEmoji(cheat.row as MonthlyWantRow)
 }
 
-// カードの「食べた」の行：その月に食べたチートの絵文字（持ち越しは除く。同じ絵文字は ×n にまとめる）
-// まとめたあとが6個以上なら、いちばん多い絵文字 × 件数の1つだけ（同じ数なら先に出てきたもの）
-export function buildEatenEmojis(status: MonthCheatStatus): { emoji: string; count: number }[] {
-  const groups: { emoji: string; count: number }[] = []
-  for (const e of status.entries) {
-    if (e.cheat.kind === 'carryover') continue
-    const emoji = getCheatEmoji(e.cheat)
-    const found = groups.find((g) => g.emoji === emoji)
-    if (found) found.count += 1
-    else groups.push({ emoji, count: 1 })
-  }
-  if (groups.length < PENDING_EMOJI_MAX_GROUPS) return groups
-  const top = groups.reduce((best, g) => (g.count > best.count ? g : best), groups[0])
-  return [{ emoji: top.emoji, count: groups.reduce((s, g) => s + g.count, 0) }]
-}
-
 // 今月食べたチートが1つ以上あるか（持ち越しは含めない）
 export function hasMonthCheats(status: MonthCheatStatus): boolean {
   return status.entries.some((e) => e.cheat.kind !== 'carryover')
 }
 
-// カードの2本の棒（v2.6.1）：同じ目盛り。いちばん右 = 食べた分と貯めた分の大きいほう。両方0なら棒なし（null）
-// 食べたの棒のうち cleared までが、なかったことにできた部分
-export function calcCheatCardBars(
-  status: Pick<MonthCheatStatus, 'eatenKcal' | 'savedKcal' | 'clearedKcal'>
-): { scaleKcal: number; eaten: number; cleared: number; saved: number } | null {
-  const scaleKcal = Math.max(status.eatenKcal, status.savedKcal)
-  if (scaleKcal <= 0) return null
+// --- 16-追記 v2.6.2 ◯月のチートのカード ---
+
+// 1本の棒：全体 = チートと貯めた分の大きいほう。両方0なら棒なし（null）
+// 足りない部分はどんなに小さくても CHEAT_BAR_SHORT_MIN_RATIO 以上。超えた部分はチートの位置に縦線
+export function calcCheatCardBar(cheatKcal: number, savedKcal: number): CheatCardBar | null {
+  if (cheatKcal <= 0 && savedKcal <= 0) return null
+  if (savedKcal < cheatKcal) {
+    const short = Math.max(CHEAT_BAR_SHORT_MIN_RATIO, (cheatKcal - savedKcal) / cheatKcal)
+    return { kind: 'short', filled: 1 - short, short, over: 0, markerAt: null }
+  }
+  if (savedKcal === cheatKcal) return { kind: 'exact', filled: 1, short: 0, over: 0, markerAt: 1 }
+  const filled = cheatKcal / savedKcal
+  return { kind: 'over', filled, short: 0, over: 1 - filled, markerAt: cheatKcal > 0 ? filled : null }
+}
+
+// 辞書の名前から（…）を外す：「ビール（350ml）」→「ビール」
+function shortFoodName(name: string): string {
+  return name.replace(/（[^）]*）/g, '').trim() || name
+}
+
+// 品（genre:name）→ 辞書の品。自由入力の品は辞書にないので換算に使わない
+const CHEAT_ITEM_FOOD = new Map(
+  CHEAT_ITEMS.filter((i) => i.foodId).map((i) => [`${i.genre}:${i.name}`, { foodId: i.foodId!, genre: i.genre }])
+)
+
+// 見出しの下の換算：その月のチートの合計を、その月にいちばん多く（kcal×数量で）食べた品に換算する
+// 品がない（品なしの🔥チートだけ・自由入力だけ）ときはラーメン。チートが0なら null
+export function pickCheatEquivalent(status: Pick<MonthCheatStatus, 'entries' | 'eatenKcal'>): CheatEquivalent | null {
+  if (status.eatenKcal <= 0) return null
+  const totals = new Map<string, number>()
+  for (const e of status.entries) {
+    if (e.cheat.kind !== 'cheat') continue
+    for (const item of e.cheat.row?.items ?? []) {
+      const key = `${item.genre}:${item.name}`
+      if (!CHEAT_ITEM_FOOD.has(key)) continue
+      totals.set(key, (totals.get(key) ?? 0) + item.kcal * item.qty)
+    }
+  }
+  let topKey: string | null = null
+  for (const [key, kcal] of totals) if (topKey === null || kcal > (totals.get(topKey) as number)) topKey = key
+  const top = topKey ? CHEAT_ITEM_FOOD.get(topKey)! : null
+  const food = FOOD_ITEM_MAP[top?.foodId ?? CHEAT_EQUIVALENT_FALLBACK_FOOD]
   return {
-    scaleKcal,
-    eaten: status.eatenKcal / scaleKcal,
-    cleared: Math.min(status.clearedKcal, status.eatenKcal) / scaleKcal,
-    saved: status.savedKcal / scaleKcal,
+    name: shortFoodName(food.name),
+    unit: food.unit,
+    count: Math.max(1, Math.round(status.eatenKcal / food.kcal)),
+    drink: top?.genre === 'alcohol',
   }
 }
 
+// 「ビール約40缶ぶん飲んで、月初めから0.4kg減」／「…、体重はそのまま」／増えた・計算できないときは「…ぶん食べました」
+export function describeCheatHeadline(eq: CheatEquivalent | null, monthWeightDiffKg: number | null): string | null {
+  if (!eq) return null
+  const amount = `${eq.name}約${eq.count}${eq.unit}ぶん`
+  const tenths = monthWeightDiffKg === null ? null : Math.round(monthWeightDiffKg * 10)
+  const te = eq.drink ? '飲んで' : '食べて'
+  if (tenths !== null && tenths < 0) return `${amount}${te}、月初めから${formatWeightChange(monthWeightDiffKg as number)}`
+  if (tenths === 0) return `${amount}${te}、体重はそのまま`
+  return `${amount}${eq.drink ? '飲みました' : '食べました'}`
+}
+
+// 棒の下の「あと135kcal」
+export function describeShortLabel(pendingKcal: number): string {
+  return `あと${formatKcal(pendingKcal)}kcal`
+}
+
+export const CHEAT_BAR_EXACT_LINE = 'ぴったり、なかったことに。'
+
+// いちばん手軽に届く方法：まだの分が300kcal以下なら、ウォーキングで届く分数（10分単位で切り上げ）
+export function pickEasiestWay(pendingKcal: number): EasiestWay | null {
+  if (pendingKcal <= 0 || pendingKcal > EASY_WALK_MAX_KCAL) return null
+  const minutes = Math.ceil(pendingKcal / EXERCISE_PT_PER_MIN.walking / EASY_WALK_STEP_MINUTES) * EASY_WALK_STEP_MINUTES
+  return { type: 'walking', minutes }
+}
+
+// 「🚶 30分歩けば届きます」
+export function describeEasiestWay(way: EasiestWay): string {
+  return `${EXERCISE_TYPE_EMOJI.walking} ${way.minutes}分歩けば届きます`
+}
+
+// ヒントの数：まだの分を それぞれの kcal で割って切り上げ。まだの分が0なら null
+export function buildCheatHints(pendingKcal: number): CheatHints | null {
+  if (pendingKcal <= 0) return null
+  const rawSteps = Math.ceil((pendingKcal * 1000) / PT_PER_1000_STEPS)
+  const stepUnit = rawSteps >= 10000 ? 1000 : 100
+  return {
+    pendingKcal,
+    tamemeshiCount: Math.ceil(pendingKcal / TAMEMESHI_PT),
+    walkingMinutes: Math.ceil(pendingKcal / EXERCISE_PT_PER_MIN.walking),
+    walking30Count: Math.ceil(pendingKcal / (EXERCISE_PT_PER_MIN.walking * 30)),
+    runningMinutes: Math.ceil(pendingKcal / EXERCISE_PT_PER_MIN.running),
+    steps: Math.ceil(rawSteps / stepUnit) * stepUnit,
+  }
+}
+
+// 60分以上は「4時間」「1時間30分」、それ未満は「45分」
+export function formatDurationMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes}分`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return m > 0 ? `${h}時間${m}分` : `${h}時間`
+}
+
+// 1万歩以上は「3万5千歩」「2万歩」、それ未満は「8,600歩」
+export function formatSteps(steps: number): string {
+  if (steps < 10000) return `${steps.toLocaleString('ja-JP')}歩`
+  const man = Math.floor(steps / 10000)
+  const sen = Math.floor((steps % 10000) / 1000)
+  return `${man}万${sen > 0 ? `${sen}千` : ''}歩`
+}
+
+// 「今日うごく？」の上の「🚶30分・👣8,000歩」（記録した順）。記録がなければ null
+export function describeDayExercises(
+  logs: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps' | 'created_at'>[]
+): string | null {
+  if (logs.length === 0) return null
+  return [...logs]
+    .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+    .map((l) =>
+      l.exercise_type === 'steps'
+        ? `${EXERCISE_TYPE_EMOJI.steps}${(l.steps ?? 0).toLocaleString('ja-JP')}歩`
+        : `${EXERCISE_TYPE_EMOJI[l.exercise_type]}${l.minutes ?? 0}分`
+    )
+    .join('・')
+}
+
 export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、メシためでなかったことに。'
+// カードでは使わない（16-追記 v2.6.2）。トースト（体重のトーストなど）でだけ使う
 export const CHEAT_CARD_ON_TRACK = '好きなものを食べながら、ちゃんと痩せてます'
 
 export function describePendingLine(status: MonthCheatStatus): string {
-  return `メシためあと${status.tamemeshiNeeded}回で、なかったことにできます`
+  return `あと${formatKcal(status.pendingKcal)}kcalで、なかったことにできます`
 }
 
 export function describeSpareLine(status: MonthCheatStatus): string {
   return `チートにあと ${formatKcal(status.spareKcal)}kcal 使えます`
 }
 
-// 「28日の焼肉は、もう準備OK」／「28日の焼肉まで、メシためあと3回」
+// 「28日の焼肉は、もう準備OK」／「28日の焼肉まで、あと450kcal」
 export function describePlannedLine(plan: PlannedCheat): string {
   const name = `${dayOf(plan.cheat.date)}日の${getCheatName(plan.cheat)}`
-  return plan.ready ? `${name}は、もう準備OK` : `${name}まで、メシためあと${plan.tamemeshiNeeded}回`
+  return plan.ready ? `${name}は、もう準備OK` : `${name}まで、あと${formatKcal(plan.shortKcal)}kcal`
 }
 
 // 貯めた kcal を身近な品で言い換える（「ビール1本」）。いちばん小さい品に届かないときは null

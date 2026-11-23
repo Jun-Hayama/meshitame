@@ -209,7 +209,7 @@ export const EXERCISE_TYPE_EMOJI: Record<ExerciseType, string> = {
   weights: '💪',
   cycling: '🚴',
   sports: '⚽',
-  steps: '👟',
+  steps: '👣',
 }
 
 // 運動の表示名（13.1）。テーブル名・型名（exercise）は変えない
@@ -302,6 +302,42 @@ export interface MonthCheatStatus {
   stage: CheatCardStage
   onTrack: boolean // 順調：食べた分 ≧ 1 かつ まだの分 0
   planned: PlannedCheat[]
+}
+
+// ===== v2.6.2 ◯月のチートのカード（16-追記 v2.6.2） =====
+
+// 見出しの下の換算：「ビール約40缶ぶん」
+export interface CheatEquivalent {
+  name: string // 辞書の名前から（…）を外したもの
+  unit: string // 辞書の単位
+  count: number // 四捨五入（1以上）
+  drink: boolean // お酒のジャンル（「飲んで」「飲みました」）
+}
+
+// 1本の棒（全体 = チートと貯めた分の大きいほう）。値はすべて棒の幅に対する割合（0〜1）
+// short = 貯めた分 < チート / over = 貯めた分 > チート / exact = ちょうど同じ
+export interface CheatCardBar {
+  kind: 'short' | 'over' | 'exact'
+  filled: number // 左から amber-400 で塗る幅
+  short: number // 足りない部分の幅（最低 CHEAT_BAR_SHORT_MIN_RATIO）
+  over: number // 超えた部分の幅
+  markerAt: number | null // チートの位置の縦線（over・exact。チート0のときは出さない）
+}
+
+// いちばん手軽に届く方法（まだの分が300kcal以下のとき）
+export interface EasiestWay {
+  type: 'walking'
+  minutes: number // 10分単位の切り上げ
+}
+
+// ヒントのシートの数
+export interface CheatHints {
+  pendingKcal: number
+  tamemeshiCount: number
+  walkingMinutes: number
+  walking30Count: number // ウォーキング30分なら何回
+  runningMinutes: number
+  steps: number // 1万歩以上は千歩単位、それ未満は100歩単位で切り上げ
 }
 
 // ===== v2.4 ログ（14.3） =====

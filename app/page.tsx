@@ -5,12 +5,11 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
 import {
-  EXERCISE_EMOJI,
-  EXERCISE_LABEL,
   MEAL_CHOICE_EMOJI,
   MEAL_CHOICE_LABELS,
-  REDUCE_PACE_LABELS,
+  type CheatHints,
   type ExerciseLogRow,
+  type ExerciseType,
   type GoalPlanRow,
   type MealChoice,
   type MealLogRow,
@@ -21,8 +20,10 @@ import {
 } from '@/types'
 import {
   calcDailyIntakeFromPace,
-  calcPaceKgPerMonth,
+  calcExercisePoints,
   calcMealSlotTargets,
+  calcMonthWeightChange,
+  describeDayExercises,
   calcMonthCheatStatus,
   getCheatLoadFrom,
   calcWeightAverage,
@@ -45,6 +46,7 @@ import {
   WEIGHT_REASSURE_MESSAGE,
   WEIGHT_REASSURE_TOAST_MS,
   WEIGHT_RISING_WEEKS,
+  UNDO_TOAST_MS,
 } from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
 import { CheatItemPicker, type CheatPickerTarget } from '@/components/CheatItemPicker'
@@ -55,6 +57,8 @@ import { useMilestones } from '@/lib/milestones'
 import { MilestoneCards } from '@/components/MilestoneCards'
 import { MonthMeshitameCard } from '@/components/MonthMeshitameCard'
 import { Toast } from '@/components/Toast'
+import { CheatHintSheet } from '@/components/CheatHintSheet'
+import { QuickExerciseRow } from '@/components/QuickExerciseRow'
 
 const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'morning', label: '朝' },
@@ -84,12 +88,19 @@ export default function Home() {
   const [exerciseLogs, setExerciseLogs] = useState<ExerciseLogRow[]>([])
   const [weightLogs, setWeightLogs] = useState<WeightLog[]>([])
   const [picker, setPicker] = useState<PickerState | null>(null)
-  const [showExercise, setShowExercise] = useState(false)
-  const [exampleSlot, setExampleSlot] = useState<MealSlot | null>(null)
+  // うごための画面（initial：カードの［記録する］から開くときの種類・時間）
+  const [exerciseSheet, setExerciseSheet] = useState<{ initial?: { type: ExerciseType; minutes: number } } | null>(null)
+  const [showTargets, setShowTargets] = useState(false)
+  const [hints, setHints] = useState<CheatHints | null>(null)
+  const [savingExercise, setSavingExercise] = useState(false)
   const [savingSlot, setSavingSlot] = useState<MealSlot | null>(null)
   // チートが入っている食事で🐷・🍚を押したときの確認（16章 3-1）
   const [confirmSwitch, setConfirmSwitch] = useState<{ slot: MealSlot; choice: MealChoice; name: string } | null>(null)
-  const [toast, setToast] = useState<{ message: string; durationMs?: number } | null>(null)
+  const [toast, setToast] = useState<{
+    message: string
+    durationMs?: number
+    action?: { label: string; onClick: () => void }
+  } | null>(null)
   const clearToast = useCallback(() => setToast(null), [])
 
   const today = formatDateJST(new Date())
@@ -100,7 +111,9 @@ export default function Home() {
   const loadFrom = getCheatLoadFrom(year, month)
   // 体重は、表示できる一番前の日の前日までの7日平均（15.3）と、今日・7日前・14日前の前週比（15.3）まで出せるように読む
   const weightFrom = addDaysToDateStr(today, -(WEIGHT_AVG_DAYS * WEIGHT_RISING_WEEKS + WEIGHT_AVG_DAYS - 1))
-  const weightLoadFrom = weightFrom < recordRange.min ? weightFrom : recordRange.min
+  // カードの「月初めから◯kg減」（13.4）のため、月の初日からも読む
+  const monthStart = `${today.slice(0, 7)}-01`
+  const weightLoadFrom = [weightFrom, recordRange.min, monthStart].reduce((a, b) => (a < b ? a : b))
 
   // 表示中の日（7日前〜今日）。記録はこの日付で保存する
   const [viewDate, setViewDate] = useState(today)
@@ -169,7 +182,6 @@ export default function Home() {
     () => (dailyIntakeKcal === null ? [] : calcMealSlotTargets(dailyIntakeKcal)),
     [dailyIntakeKcal]
   )
-  const exampleTarget = slotTargets.find((t) => t.slot === exampleSlot) ?? null
 
   // ◯月のチート（16章。常に今月）
   const statusFor = useCallback(
@@ -179,10 +191,14 @@ export default function Home() {
   )
   const status = useMemo(() => statusFor(wants, mealLogs, exerciseLogs), [statusFor, wants, mealLogs, exerciseLogs])
 
+  // カードの換算の行の体重の部分（13.4。今日までの月初めからの変化）
+  const monthWeightDiffKg = useMemo(() => calcMonthWeightChange(weightLogs, today), [weightLogs, today])
+
   // 記録のあと：新たになかったことになったチートがあれば「{チート名}、なかったことに。」、なければ fallback
   function applyChange(
     next: { wants?: MonthlyWantRow[]; meals?: MealLogRow[]; exercises?: ExerciseLogRow[] },
-    fallback?: string
+    fallback?: string,
+    action?: { label: string; onClick: () => void }
   ) {
     const w = next.wants ?? wants
     const meals = next.meals ?? mealLogs
@@ -191,8 +207,9 @@ export default function Home() {
     setWants(w)
     setMealLogs(meals)
     setExerciseLogs(exercises)
-    if (cleared) setToast({ message: `${getCheatName(cleared)}、なかったことに。` })
-    else if (fallback) setToast({ message: fallback })
+    const durationMs = action ? UNDO_TOAST_MS : undefined
+    if (cleared) setToast({ message: `${getCheatName(cleared)}、なかったことに。`, durationMs, action })
+    else if (fallback) setToast({ message: fallback, durationMs, action })
   }
 
   const viewLogs = mealLogs.filter((l) => l.log_date === viewDate)
@@ -322,6 +339,47 @@ export default function Home() {
     applyChange({ wants: nextWants, meals })
   }
 
+  // 「今日うごく？」：その場で保存して、トーストに［取り消す］を出す（16-追記 v2.6.2）
+  async function saveQuickExercise(values: { type: ExerciseType; minutes?: number; steps?: number }) {
+    const uid = await currentUserId()
+    if (!uid) return
+    const points =
+      values.type === 'steps'
+        ? calcExercisePoints({ type: 'steps', steps: values.steps ?? 0 })
+        : calcExercisePoints({ type: values.type, minutes: values.minutes ?? 0 })
+    if (points <= 0) return
+    setSavingExercise(true)
+    const { data, error: insErr } = await supabase
+      .from('exercise_logs')
+      .insert({
+        user_id: uid,
+        log_date: viewDate,
+        exercise_type: values.type,
+        minutes: values.type === 'steps' ? null : values.minutes,
+        steps: values.type === 'steps' ? values.steps : null,
+        points,
+      })
+      .select()
+      .single()
+    setSavingExercise(false)
+    if (insErr) {
+      setError(insErr.message)
+      return
+    }
+    const row = data as ExerciseLogRow
+    const exercises = [...exerciseLogs, row]
+    applyChange({ exercises }, describeExerciseToast(row), { label: '取り消す', onClick: () => undoQuickExercise(row.id) })
+  }
+
+  async function undoQuickExercise(id: string) {
+    const { error: delErr } = await supabase.from('exercise_logs').delete().eq('id', id)
+    if (delErr) {
+      setError(delErr.message)
+      return
+    }
+    setExerciseLogs((logs) => logs.filter((l) => l.id !== id))
+  }
+
   function openExtra(date: string, editing: MonthlyWantRow | null = null) {
     setPicker({ target: { kind: 'extra', date }, editing, canRemove: !!editing })
   }
@@ -408,12 +466,7 @@ export default function Home() {
               <span className="text-amber-400">メシ</span>ため
             </h1>
           </div>
-          <button type="button" onClick={() => router.push('/settings')} className="text-stone-500 text-xs text-right">
-            目安 {dailyIntakeKcal ?? '—'}kcal
-            <br />
-            {pace && (pace === 'keep' ? REDUCE_PACE_LABELS.keep : `${REDUCE_PACE_LABELS[pace]}（月${calcPaceKgPerMonth(pace)}kg）`)}
-          </button>
-        </header>
+</header>
 
         {!isToday && (
           <div className="flex items-center justify-between bg-amber-400/10 border border-amber-400/30 rounded-2xl px-4 py-2.5 mb-6">
@@ -458,30 +511,37 @@ export default function Home() {
           </section>
         )}
 
-        {/* 今日の目安 */}
+        {/* ◯月のチート（16章・16-追記 v2.6.2） */}
         <section className="mb-8">
-          <h2 className="text-sm font-semibold text-stone-300 mb-3">{isToday ? '今日の目安' : 'この日の目安'}</h2>
-          <ul className="grid grid-cols-3 gap-2">
-            {slotTargets.map((t) => (
-              <li key={t.slot} className="bg-stone-900 rounded-2xl px-3 py-3 relative">
-                <button
-                  type="button"
-                  onClick={() => setExampleSlot(t.slot)}
-                  aria-label={`${t.label}のメニュー例`}
-                  className="absolute top-2 right-2 w-6 h-6 rounded-full bg-stone-800 text-stone-400 text-xs"
-                >
-                  ?
-                </button>
-                <p className="text-sm font-medium mb-1">{t.label}</p>
-                <p className="text-stone-400 text-xs">目安 ≒ {t.kcal}kcal</p>
-              </li>
-            ))}
-          </ul>
+          <MonthMeshitameCard
+            month={month}
+            status={status}
+            monthWeightDiffKg={monthWeightDiffKg}
+            onOpenLog={() => router.push('/log')}
+            onEatToday={() => {
+              setViewDate(today)
+              openExtra(today)
+            }}
+            onPlan={() => router.push('/wants?add=1')}
+            onRecordWalk={(minutes) => {
+              setViewDate(today)
+              setExerciseSheet({ initial: { type: 'walking', minutes } })
+            }}
+            onOpenHints={setHints}
+          />
         </section>
-
         {/* 食事の記録（16章 3-1） */}
         <section className="mb-8">
-          <h2 className="text-sm font-semibold text-stone-300 mb-3">{isToday ? '今日の記録' : 'この日の記録'}</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-stone-300">{isToday ? '今日の記録' : 'この日の記録'}</h2>
+            <button
+              type="button"
+              onClick={() => setShowTargets(true)}
+              className="bg-stone-800 text-stone-300 text-xs px-3 py-1 rounded-full"
+            >
+              目安
+            </button>
+          </div>
           <div className="space-y-3">
             {SLOTS.map(({ slot, label }) => {
               const selected = choiceFor(slot)
@@ -540,30 +600,19 @@ export default function Home() {
                 ＋
               </button>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setShowExercise(true)}
-              className="bg-stone-800 text-amber-400 font-bold text-xs px-4 py-2 rounded-full"
-            >
-              {EXERCISE_EMOJI}＋{EXERCISE_LABEL}
-            </button>
           </div>
         </section>
 
-        {/* ◯月のチート（16章 3-2） */}
-        <section className="mb-8">
-          <MonthMeshitameCard
-            month={month}
-            status={status}
-            onOpenLog={() => router.push('/log')}
-            onEatToday={() => {
-              setViewDate(today)
-              openExtra(today)
-            }}
-            onPlan={() => router.push('/wants?add=1')}
-          />
-        </section>
+        {/* 今日うごく？（16-追記 v2.6.2） */}
+        <QuickExerciseRow
+          isToday={isToday}
+          summary={describeDayExercises(exerciseLogs.filter((l) => l.log_date === viewDate))}
+          saving={savingExercise}
+          onQuick={(type, minutes) => saveQuickExercise({ type, minutes })}
+          onSteps={(steps) => saveQuickExercise({ type: 'steps', steps })}
+          onMore={() => setExerciseSheet({})}
+        />
+
       </div>
 
       {picker && userId && (
@@ -617,21 +666,24 @@ export default function Home() {
         </div>
       )}
 
-      {showExercise && userId && (
+      {exerciseSheet && userId && (
         <ExerciseSheet
           userId={userId}
           logDate={viewDate}
-          onClose={() => setShowExercise(false)}
+          initial={exerciseSheet.initial}
+          onClose={() => setExerciseSheet(null)}
           onSaved={(row) => {
-            setShowExercise(false)
+            setExerciseSheet(null)
             applyChange({ exercises: [...exerciseLogs, row] }, describeExerciseToast(row))
           }}
         />
       )}
 
-      {exampleTarget && <MealExamplesSheet target={exampleTarget} onClose={() => setExampleSlot(null)} />}
+      {showTargets && <MealExamplesSheet targets={slotTargets} onClose={() => setShowTargets(false)} />}
 
-      {toast && <Toast message={toast.message} durationMs={toast.durationMs} onDone={clearToast} />}
+      {hints && <CheatHintSheet hints={hints} onClose={() => setHints(null)} />}
+
+      {toast && <Toast message={toast.message} durationMs={toast.durationMs} action={toast.action} onDone={clearToast} />}
 
       <BottomNav active="home" />
     </div>

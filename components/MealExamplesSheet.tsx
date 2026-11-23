@@ -60,10 +60,14 @@ function ExampleList({
   )
 }
 
-export function MealExamplesSheet({ target, onClose }: { target: MealSlotTarget; onClose: () => void }) {
-  const { normal, hearty, heartyMinKcal } = pickMealExamples(target.slot, target.kcal)
+// 今日の記録の［目安］（16-追記 v2.6.2）：朝・昼・夜を切り替えて、目安とメニュー例を見る
+export function MealExamplesSheet({ targets, onClose }: { targets: MealSlotTarget[]; onClose: () => void }) {
+  const [slot, setSlot] = useState(targets[0]?.slot ?? 'morning')
   const [openKey, setOpenKey] = useState<string | null>(null)
   const toggle = (key: string) => setOpenKey((cur) => (cur === key ? null : key))
+  const target = targets.find((t) => t.slot === slot) ?? targets[0]
+  if (!target) return null
+  const { normal, hearty, heartyMinKcal } = pickMealExamples(target.slot, target.kcal)
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60" onClick={onClose}>
@@ -72,18 +76,34 @@ export function MealExamplesSheet({ target, onClose }: { target: MealSlotTarget;
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center mb-4">
-          <h3 className="font-bold">
-            {target.label}の目安 ≒ {target.kcal}kcal
-          </h3>
+          <h3 className="font-bold">目安</h3>
           <button type="button" onClick={onClose} className="text-stone-500 text-sm">
             閉じる
           </button>
         </div>
-        <ExampleList title="目安くらいの例" items={normal} listKey="normal" openKey={openKey} onToggle={toggle} />
+        <div className="grid grid-cols-3 gap-2 mb-5">
+          {targets.map((t) => (
+            <button
+              key={t.slot}
+              type="button"
+              onClick={() => {
+                setSlot(t.slot)
+                setOpenKey(null)
+              }}
+              className={`rounded-2xl px-3 py-2.5 text-left ${
+                t.slot === target.slot ? 'bg-amber-400 text-stone-950' : 'bg-stone-800 text-stone-300'
+              }`}
+            >
+              <p className="text-sm font-bold">{t.label}</p>
+              <p className={`text-xs ${t.slot === target.slot ? 'text-stone-800' : 'text-stone-400'}`}>目安 ≒ {t.kcal}kcal</p>
+            </button>
+          ))}
+        </div>
+        <ExampleList title="目安くらいの例" items={normal} listKey={`${target.slot}:normal`} openKey={openKey} onToggle={toggle} />
         <ExampleList
           title={`チートの例（${heartyMinKcal}kcal〜）`}
           items={hearty}
-          listKey="hearty"
+          listKey={`${target.slot}:hearty`}
           openKey={openKey}
           onToggle={toggle}
         />

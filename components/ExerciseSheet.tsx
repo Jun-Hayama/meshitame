@@ -17,10 +17,12 @@ const MINUTE_PRESETS = [10, 20, 30, 45, 60, 90]
 const STEP_PRESETS = [3000, 5000, 8000, 10000]
 
 // editing を渡すと、その記録を直す・削除するシートになる（14.3）
+// initial を渡すと、その種類・時間を選んだ状態で開く（カードの［記録する］。すぐには保存しない）
 export function ExerciseSheet({
   userId,
   logDate,
   editing,
+  initial,
   onClose,
   onSaved,
   onDeleted,
@@ -28,13 +30,14 @@ export function ExerciseSheet({
   userId: string
   logDate: string // YYYY-MM-DD（日本時間）
   editing?: ExerciseLogRow
+  initial?: { type: ExerciseType; minutes?: number; steps?: number }
   onClose: () => void
   onSaved: (row: ExerciseLogRow) => void
   onDeleted?: (id: string) => void
 }) {
-  const [type, setType] = useState<ExerciseType>(editing?.exercise_type ?? 'walking')
-  const [minutes, setMinutes] = useState(editing?.minutes ?? 30)
-  const [steps, setSteps] = useState(editing?.steps ?? 8000)
+  const [type, setType] = useState<ExerciseType>(editing?.exercise_type ?? initial?.type ?? 'walking')
+  const [minutes, setMinutes] = useState(editing?.minutes ?? initial?.minutes ?? 30)
+  const [steps, setSteps] = useState(editing?.steps ?? initial?.steps ?? 8000)
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
