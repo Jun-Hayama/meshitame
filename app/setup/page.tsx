@@ -14,7 +14,7 @@ import {
   parseWeightInput,
 } from '@/lib/calories'
 import { REDUCE_PACE_LABELS, type GoalPlanRow, type ReducePace } from '@/types'
-import { DEFAULT_REDUCE_PACE, GATE_MONTHS } from '@/lib/calorieConstants'
+import { ACTIVITY_LEVEL_NOTE, DEFAULT_REDUCE_PACE, GATE_MONTHS } from '@/lib/calorieConstants'
 import { useReducePace } from '@/lib/reducePace'
 
 type Sex = 'male' | 'female' | 'other'
@@ -255,6 +255,8 @@ export default function SetupPage() {
                 </button>
               ))}
             </div>
+            {/* 16-追記 v2.6.3：意識して動いた分だけがうごため */}
+            <p className="text-stone-500 text-xs mt-2 px-1">{ACTIVITY_LEVEL_NOTE}</p>
           </div>
 
           {/* 期間 */}

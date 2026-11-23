@@ -16,6 +16,8 @@ import {
   type MealSlot,
   type MonthCheatStatus,
   type MonthlyWantRow,
+  type QuickExercise,
+  type RecordToastInput,
   type WeightLog,
 } from '@/types'
 import {
@@ -27,8 +29,7 @@ import {
   calcMonthCheatStatus,
   getCheatLoadFrom,
   calcWeightAverage,
-  describeExerciseToast,
-  describeMeshitameToast,
+  describeRecordToast,
   detectNewlyCleared,
   addDaysToDateStr,
   formatDateJST,
@@ -39,6 +40,7 @@ import {
   getCheatRowEmoji,
   getRecordableDateRange,
   isWeightRisingThreeWeeks,
+  pickFrequentExercises,
   shouldShowWeightReassurance,
 } from '@/lib/calories'
 import {
@@ -194,27 +196,34 @@ export default function Home() {
   // カードの換算の行の体重の部分（13.4。今日までの月初めからの変化）
   const monthWeightDiffKg = useMemo(() => calcMonthWeightChange(weightLogs, today), [weightLogs, today])
 
-  // 記録のあと：新たになかったことになったチートがあれば「{チート名}、なかったことに。」、なければ fallback
+  // いつものうごため（16-追記 v2.6.3）：直近30日によく記録したもの2つ
+  const quickExercises = useMemo(() => pickFrequentExercises(exerciseLogs, today), [exerciseLogs, today])
+
+  // 記録のあとのトースト（1つだけ）
+  // メシため・うごため（record）：describeRecordToast（16-追記 v2.6.3）。それ以外：新たになかったことになったチートがあれば「{チート名}、なかったことに。」
   function applyChange(
     next: { wants?: MonthlyWantRow[]; meals?: MealLogRow[]; exercises?: ExerciseLogRow[] },
-    fallback?: string,
+    record?: RecordToastInput,
     action?: { label: string; onClick: () => void }
   ) {
     const w = next.wants ?? wants
     const meals = next.meals ?? mealLogs
     const exercises = next.exercises ?? exerciseLogs
-    const cleared = detectNewlyCleared(status, statusFor(w, meals, exercises))
+    const after = statusFor(w, meals, exercises)
     setWants(w)
     setMealLogs(meals)
     setExerciseLogs(exercises)
     const durationMs = action ? UNDO_TOAST_MS : undefined
+    if (record) {
+      setToast({ message: describeRecordToast(record, status, after), durationMs, action })
+      return
+    }
+    const cleared = detectNewlyCleared(status, after)
     if (cleared) setToast({ message: `${getCheatName(cleared)}、なかったことに。`, durationMs, action })
-    else if (fallback) setToast({ message: fallback, durationMs, action })
   }
 
   const viewLogs = mealLogs.filter((l) => l.log_date === viewDate)
   const viewWeight = weightLogs.find((w) => w.measured_at === viewDate) ?? null
-  const viewAverage = calcWeightAverage(weightLogs, viewDate)
   const todayAverage = calcWeightAverage(weightLogs, today)
   const { milestones, dismiss: dismissMilestone } = useMilestones(goal, todayAverage)
 
@@ -292,7 +301,7 @@ export default function Home() {
     const meals = await upsertMealLog(slot, choice)
     setSavingSlot(null)
     if (!meals) return
-    applyChange({ wants: nextWants, meals }, choice === 'light' ? describeMeshitameToast() : undefined)
+    applyChange({ wants: nextWants, meals }, choice === 'light' ? { kind: 'meshitame' } : undefined)
   }
 
   // 書き換え：チートを取り消してから、押したほうで記録する
@@ -339,14 +348,11 @@ export default function Home() {
     applyChange({ wants: nextWants, meals })
   }
 
-  // 「今日うごく？」：その場で保存して、トーストに［取り消す］を出す（16-追記 v2.6.2）
-  async function saveQuickExercise(values: { type: ExerciseType; minutes?: number; steps?: number }) {
+  // いつものうごため：その場で保存して、トーストに［取り消す］を出す（16-追記 v2.6.2・v2.6.3）
+  async function saveQuickExercise(values: QuickExercise) {
     const uid = await currentUserId()
     if (!uid) return
-    const points =
-      values.type === 'steps'
-        ? calcExercisePoints({ type: 'steps', steps: values.steps ?? 0 })
-        : calcExercisePoints({ type: values.type, minutes: values.minutes ?? 0 })
+    const points = calcExercisePoints({ type: values.type, minutes: values.minutes })
     if (points <= 0) return
     setSavingExercise(true)
     const { data, error: insErr } = await supabase
@@ -355,8 +361,8 @@ export default function Home() {
         user_id: uid,
         log_date: viewDate,
         exercise_type: values.type,
-        minutes: values.type === 'steps' ? null : values.minutes,
-        steps: values.type === 'steps' ? values.steps : null,
+        minutes: values.minutes,
+        steps: null,
         points,
       })
       .select()
@@ -368,7 +374,7 @@ export default function Home() {
     }
     const row = data as ExerciseLogRow
     const exercises = [...exerciseLogs, row]
-    applyChange({ exercises }, describeExerciseToast(row), { label: '取り消す', onClick: () => undoQuickExercise(row.id) })
+    applyChange({ exercises }, { kind: 'exercise', log: row }, { label: '取り消す', onClick: () => undoQuickExercise(row.id) })
   }
 
   async function undoQuickExercise(id: string) {
@@ -503,11 +509,6 @@ export default function Home() {
               compact
               onSaved={handleWeightSaved}
             />
-            {viewAverage.avgKg !== null && (
-              <button type="button" onClick={() => router.push('/weight')} className="text-stone-500 text-xs mt-1.5 px-1">
-                このところ <span className="text-stone-300">{viewAverage.avgKg.toFixed(1)}kg</span>前後
-              </button>
-            )}
           </section>
         )}
 
@@ -530,7 +531,7 @@ export default function Home() {
             onOpenHints={setHints}
           />
         </section>
-        {/* 食事の記録（16章 3-1） */}
+        {/* 今日の記録：ごはん（16章 3-1）とうごき（16-追記 v2.6.3） */}
         <section className="mb-8">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-stone-300">{isToday ? '今日の記録' : 'この日の記録'}</h2>
@@ -542,6 +543,7 @@ export default function Home() {
               目安
             </button>
           </div>
+          <h3 className="text-xs font-medium text-stone-500 mb-2">ごはん</h3>
           <div className="space-y-3">
             {SLOTS.map(({ slot, label }) => {
               const selected = choiceFor(slot)
@@ -601,17 +603,18 @@ export default function Home() {
               </button>
             </div>
           </div>
-        </section>
 
-        {/* 今日うごく？（16-追記 v2.6.2） */}
-        <QuickExerciseRow
-          isToday={isToday}
-          summary={describeDayExercises(exerciseLogs.filter((l) => l.log_date === viewDate))}
-          saving={savingExercise}
-          onQuick={(type, minutes) => saveQuickExercise({ type, minutes })}
-          onSteps={(steps) => saveQuickExercise({ type: 'steps', steps })}
-          onMore={() => setExerciseSheet({})}
-        />
+          <div className="mt-6">
+            <QuickExerciseRow
+              isToday={isToday}
+              summary={describeDayExercises(exerciseLogs.filter((l) => l.log_date === viewDate))}
+              exercises={quickExercises}
+              saving={savingExercise}
+              onQuick={saveQuickExercise}
+              onMore={() => setExerciseSheet({})}
+            />
+          </div>
+        </section>
 
       </div>
 
@@ -674,7 +677,7 @@ export default function Home() {
           onClose={() => setExerciseSheet(null)}
           onSaved={(row) => {
             setExerciseSheet(null)
-            applyChange({ exercises: [...exerciseLogs, row] }, describeExerciseToast(row))
+            applyChange({ exercises: [...exerciseLogs, row] }, { kind: 'exercise', log: row })
           }}
         />
       )}

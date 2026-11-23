@@ -330,6 +330,19 @@ export interface EasiestWay {
   minutes: number // 10分単位の切り上げ
 }
 
+// ===== v2.6.3 いつものうごため・記録のトースト（16-追記 v2.6.3） =====
+
+// いつものうごため（うごきのワンボタン）：種類×時間
+export interface QuickExercise {
+  type: Exclude<ExerciseType, 'steps'>
+  minutes: number
+}
+
+// トーストを出す記録：メシため、またはうごため
+export type RecordToastInput =
+  | { kind: 'meshitame' }
+  | { kind: 'exercise'; log: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps' | 'points'> }
+
 // ヒントのシートの数
 export interface CheatHints {
   pendingKcal: number

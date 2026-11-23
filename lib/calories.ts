@@ -49,6 +49,8 @@ import {
   CheatEquivalent,
   CheatCardBar,
   EasiestWay,
+  QuickExercise,
+  RecordToastInput,
   CheatHints,
 } from '@/types'
 import {
@@ -100,6 +102,9 @@ import {
   EASY_WALK_MAX_KCAL,
   EASY_WALK_STEP_MINUTES,
   CHEAT_EQUIVALENT_FALLBACK_FOOD,
+  FREQUENT_EXERCISE_DAYS,
+  FREQUENT_EXERCISE_MAX,
+  FREQUENT_EXERCISE_DEFAULTS,
 } from '@/lib/calorieConstants'
 import { CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
@@ -1050,9 +1055,19 @@ export function pickEasiestWay(pendingKcal: number): EasiestWay | null {
   return { type: 'walking', minutes }
 }
 
-// 「🚶 30分歩けば届きます」
+// カードの一番下の行（16-追記 v2.6.3）：「🚶 30分歩けば、なかったことに」
 export function describeEasiestWay(way: EasiestWay): string {
-  return `${EXERCISE_TYPE_EMOJI.walking} ${way.minutes}分歩けば届きます`
+  return `${EXERCISE_TYPE_EMOJI.walking} ${way.minutes}分歩けば、なかったことに`
+}
+
+// 300kcalより多いときの一番下の行（「ヒント ›」と並べる）
+export const CHEAT_CARD_HOW_TO_REACH = 'どうやって届く？'
+
+// カードの一番下の行：300kcal以下なら歩く分数（［記録する］を出す）、より多いなら「どうやって届く？」。まだの分0なら null
+export function describeCardWayLine(pendingKcal: number): { text: string; walkMinutes: number | null } | null {
+  if (pendingKcal <= 0) return null
+  const way = pickEasiestWay(pendingKcal)
+  return way ? { text: describeEasiestWay(way), walkMinutes: way.minutes } : { text: CHEAT_CARD_HOW_TO_REACH, walkMinutes: null }
 }
 
 // ヒントの数：まだの分を それぞれの kcal で割って切り上げ。まだの分が0なら null
@@ -1086,7 +1101,7 @@ export function formatSteps(steps: number): string {
   return `${man}万${sen > 0 ? `${sen}千` : ''}歩`
 }
 
-// 「今日うごく？」の上の「🚶30分・👣8,000歩」（記録した順）。記録がなければ null
+// 今日の記録の「うごき」の「🚶30分・👣8,000歩」（記録した順）。記録がなければ null
 export function describeDayExercises(
   logs: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps' | 'created_at'>[]
 ): string | null {
@@ -1104,10 +1119,6 @@ export function describeDayExercises(
 export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、メシためでなかったことに。'
 // カードでは使わない（16-追記 v2.6.2）。トースト（体重のトーストなど）でだけ使う
 export const CHEAT_CARD_ON_TRACK = '好きなものを食べながら、ちゃんと痩せてます'
-
-export function describePendingLine(status: MonthCheatStatus): string {
-  return `あと${formatKcal(status.pendingKcal)}kcalで、なかったことにできます`
-}
 
 export function describeSpareLine(status: MonthCheatStatus): string {
   return `チートにあと ${formatKcal(status.spareKcal)}kcal 使えます`
@@ -1132,10 +1143,71 @@ export function describeMeshitameToast(): string {
 
 // 「🏃 うごため 30分。ビール1本ぶんです」（届かないときは「🏃 うごため 10分。」）
 export function describeExerciseToast(log: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps' | 'points'>): string {
-  const amount =
-    log.exercise_type === 'steps' ? `${(log.steps ?? 0).toLocaleString('ja-JP')}歩` : `${log.minutes ?? 0}分`
   const eq = pickSavedEquivalent(log.points)
-  return `${EXERCISE_EMOJI} ${EXERCISE_LABEL} ${amount}。${eq ? `${eq.label}ぶんです` : ''}`
+  return `${EXERCISE_EMOJI} ${EXERCISE_LABEL} ${describeExerciseAmount(log)}。${eq ? `${eq.label}ぶんです` : ''}`
+}
+
+// トーストの「30分」「8,000歩」
+function describeExerciseAmount(log: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps'>): string {
+  return log.exercise_type === 'steps' ? `${(log.steps ?? 0).toLocaleString('ja-JP')}歩` : `${log.minutes ?? 0}分`
+}
+
+// --- 16-追記 v2.6.3 記録のトースト ---
+
+// メシため・うごためを保存したあとのトースト（1つだけ）。before / after はその記録の前後の状態
+// 1. なかったことになった → 「{チート名}、なかったことに。」
+// 2. まだの分が残る → 「🐷 メシため。あと15kcalです」
+// 3. 今月のチートも予定もない → 「🐷 メシため。ビール1本ぶんです」
+// 4. 今月のチートはなく、今日より後に予定がある → 「🐷 メシため。28日の焼肉まで、あと300kcalです」／「…は、もう準備OKです」
+// 5. それ以外 → 「🐷 メシため。チートにあと310kcal使えます」
+export function describeRecordToast(record: RecordToastInput, before: MonthCheatStatus, after: MonthCheatStatus): string {
+  const cleared = detectNewlyCleared(before, after)
+  if (cleared) return `${getCheatName(cleared)}、なかったことに。`
+  const head =
+    record.kind === 'meshitame'
+      ? `${MEAL_CHOICE_EMOJI.light} ${MEAL_CHOICE_LABELS.light}`
+      : `${EXERCISE_EMOJI} ${EXERCISE_LABEL} ${describeExerciseAmount(record.log)}`
+  if (after.pendingKcal > 0) return `${head}。あと${formatKcal(after.pendingKcal)}kcalです`
+  if (after.eatenKcal === 0) {
+    const plan = after.planned[0]
+    if (plan) return `${head}。${describePlannedLine(plan)}です`
+    return record.kind === 'meshitame' ? describeMeshitameToast() : describeExerciseToast(record.log)
+  }
+  return `${head}。チートにあと${formatKcal(after.spareKcal)}kcal使えます`
+}
+
+// --- 16-追記 v2.6.3 いつものうごため ---
+
+// 直近30日（今日を含む）のうごため（歩数は除く）を「種類×時間」でまとめ、回数の多い順に2つ
+// 回数が同じなら、最後に記録した日が新しいほうを先。足りないときは ウォーキング30分 → ランニング30分 で埋める（重ねない）
+export function pickFrequentExercises(
+  logs: Pick<ExerciseLogRow, 'log_date' | 'exercise_type' | 'minutes' | 'created_at'>[],
+  today: string,
+  days = FREQUENT_EXERCISE_DAYS,
+  limit = FREQUENT_EXERCISE_MAX
+): QuickExercise[] {
+  const from = addDaysToDateStr(today, -(days - 1))
+  const groups = new Map<string, { exercise: QuickExercise; count: number; last: string }>()
+  for (const l of logs) {
+    if (l.exercise_type === 'steps' || !l.minutes || l.minutes <= 0) continue
+    if (l.log_date < from || l.log_date > today) continue
+    const key = `${l.exercise_type}:${l.minutes}`
+    const at = `${l.log_date} ${l.created_at ?? ''}`
+    const found = groups.get(key)
+    if (found) {
+      found.count += 1
+      if (at > found.last) found.last = at
+    } else groups.set(key, { exercise: { type: l.exercise_type, minutes: l.minutes }, count: 1, last: at })
+  }
+  const picked = [...groups.values()]
+    .sort((a, b) => b.count - a.count || b.last.localeCompare(a.last))
+    .slice(0, limit)
+    .map((g) => g.exercise)
+  for (const d of FREQUENT_EXERCISE_DEFAULTS) {
+    if (picked.length >= limit) break
+    if (!picked.some((p) => p.type === d.type && p.minutes === d.minutes)) picked.push({ type: d.type, minutes: d.minutes })
+  }
+  return picked
 }
 
 // --- 16. よく食べるもの（直近60日に記録した回数の多い順。頻度ベースで登録済みの品も入れる） ---

@@ -1,6 +1,6 @@
 'use client'
 
-// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2）。計算は lib/calories.ts の関数で済ませて出すだけ
+// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2・v2.6.3）。計算は lib/calories.ts の関数で済ませて出すだけ
 // 1本の棒（全体 = チートと貯めた分の大きいほう）。カード全体を押すとログ（/log）へ。中のボタンはボタンの動きを優先する
 
 import type { ReactNode } from 'react'
@@ -9,14 +9,12 @@ import {
   CHEAT_CARD_INTRO,
   buildCheatHints,
   calcCheatCardBar,
+  describeCardWayLine,
   describeCheatHeadline,
-  describeEasiestWay,
-  describePendingLine,
   describePlannedLine,
   describeShortLabel,
   describeSpareLine,
   pickCheatEquivalent,
-  pickEasiestWay,
 } from '@/lib/calories'
 import { EXERCISE_EMOJI, MEAL_CHOICE_EMOJI, type CheatHints, type MonthCheatStatus } from '@/types'
 
@@ -68,7 +66,7 @@ export function MonthMeshitameCard({
   const plan = status.planned[0] ?? null
   const bar = calcCheatCardBar(status.eatenKcal, status.savedKcal)
   const headline = describeCheatHeadline(pickCheatEquivalent(status), monthWeightDiffKg)
-  const easiest = pickEasiestWay(status.pendingKcal)
+  const wayLine = describeCardWayLine(status.pendingKcal)
   const hints = buildCheatHints(status.pendingKcal)
   const { tamemeshiCount, exerciseCount } = status.earned
 
@@ -143,31 +141,29 @@ export function MonthMeshitameCard({
         <p className="text-stone-300 text-sm mt-3">{CHEAT_CARD_INTRO}</p>
       )}
 
-      {status.stage === 'pending' && (
-        <>
-          <p className="text-amber-400 text-sm font-bold">{describePendingLine(status)}</p>
-          {easiest && (
-            <div className="flex items-center justify-between gap-2 mt-2">
-              <p className="text-stone-300 text-sm">{describeEasiestWay(easiest)}</p>
-              <InnerButton
-                onClick={() => onRecordWalk(easiest.minutes)}
-                className="shrink-0 bg-amber-400 text-stone-950 font-bold text-xs px-3 py-1.5 rounded-xl"
-              >
-                記録する
-              </InnerButton>
-            </div>
+      {/* 一番下の行（16-追記 v2.6.3）：「🚶 30分歩けば、なかったことに［記録する］ヒント ›」／「どうやって届く？ ヒント ›」 */}
+      {status.stage === 'pending' && wayLine && (
+        <div className="flex items-center gap-2">
+          <p className={`flex-1 min-w-0 text-sm ${wayLine.walkMinutes === null ? 'text-amber-400 font-bold' : 'text-stone-300'}`}>
+            {wayLine.text}
+          </p>
+          {wayLine.walkMinutes !== null && (
+            <InnerButton
+              onClick={() => onRecordWalk(wayLine.walkMinutes as number)}
+              className="shrink-0 bg-amber-400 text-stone-950 font-bold text-xs px-3 py-1.5 rounded-xl"
+            >
+              記録する
+            </InnerButton>
           )}
           {hints && (
-            <div className="flex justify-end mt-2">
-              <InnerButton
-                onClick={() => onOpenHints(hints)}
-                className={`text-xs py-1 ${easiest ? 'text-stone-500' : 'text-amber-400 font-bold'}`}
-              >
-                ヒント ›
-              </InnerButton>
-            </div>
+            <InnerButton
+              onClick={() => onOpenHints(hints)}
+              className={`shrink-0 text-xs py-1 ${wayLine.walkMinutes === null ? 'text-amber-400 font-bold' : 'text-stone-500'}`}
+            >
+              ヒント ›
+            </InnerButton>
           )}
-        </>
+        </div>
       )}
 
       {status.stage === 'spare' && (

@@ -93,11 +93,13 @@ import {
   describeDayExercises,
   describeShortLabel,
   getCheatLoadFrom,
-  describePendingLine,
   describeSpareLine,
   describePlannedLine,
   describeMeshitameToast,
   describeExerciseToast,
+  describeRecordToast,
+  describeCardWayLine,
+  pickFrequentExercises,
   pickFrequentCheatItems,
 } from '@/lib/calories'
 import type { ExerciseLogRow, MealLogRow, MonthlyWantRow, WantEntry } from '@/types'
@@ -1466,7 +1468,6 @@ describe('◯月のチート（16章 v2.6）', () => {
       expect(s.pendingKcal).toBe(350)
       expect(s.spareKcal).toBe(0)
       expect(s.tamemeshiNeeded).toBe(3)
-      expect(describePendingLine(s)).toBe('あと350kcalで、なかったことにできます')
     })
 
     it('余り = 貯めた分 − 食べた分。うごためも貯めた分に入る', () => {
@@ -1705,12 +1706,79 @@ describe('◯月のチート（16章 v2.6）', () => {
         expect(pickEasiestWay(150)).toEqual({ type: 'walking', minutes: 30 })
         expect(pickEasiestWay(151)).toEqual({ type: 'walking', minutes: 40 })
         expect(pickEasiestWay(300)).toEqual({ type: 'walking', minutes: 60 })
-        expect(describeEasiestWay({ type: 'walking', minutes: 30 })).toBe('🚶 30分歩けば届きます')
+        expect(describeEasiestWay({ type: 'walking', minutes: 30 })).toBe('🚶 30分歩けば、なかったことに')
       })
 
       it('300kcalより多いとき・まだの分0のときは出さない', () => {
         expect(pickEasiestWay(301)).toBeNull()
         expect(pickEasiestWay(0)).toBeNull()
+      })
+    })
+
+    describe('カードの一番下の行（16-追記 v2.6.3）', () => {
+      it('300kcal以下：歩く分数と［記録する］', () => {
+        expect(describeCardWayLine(135)).toEqual({ text: '🚶 30分歩けば、なかったことに', walkMinutes: 30 })
+        expect(describeCardWayLine(300)).toEqual({ text: '🚶 60分歩けば、なかったことに', walkMinutes: 60 })
+      })
+
+      it('300kcalより多い：「どうやって届く？」', () => {
+        expect(describeCardWayLine(301)).toEqual({ text: 'どうやって届く？', walkMinutes: null })
+      })
+
+      it('まだの分0：出さない', () => {
+        expect(describeCardWayLine(0)).toBeNull()
+      })
+    })
+
+    describe('記録のトースト（16-追記 v2.6.3）', () => {
+      const meshitame = { kind: 'meshitame' } as const
+      const walk30 = { kind: 'exercise', log: { exercise_type: 'walking', minutes: 30, steps: null, points: 150 } } as const
+      const walk30Log = { log_date: '2026-11-20', points: 150 }
+
+      it('まだの分が残る：「あと◯kcalです」', () => {
+        const wants = [extra('2026-11-02', 465)]
+        const before = status({ wants, mealLogs: lights('2026-11-03', 1) }) // 315
+        const after = status({ wants, mealLogs: lights('2026-11-03', 2) }) // 165
+        expect(describeRecordToast(meshitame, before, after)).toBe('🐷 メシため。あと165kcalです')
+        const afterWalk = status({ wants, mealLogs: lights('2026-11-03', 1), exerciseLogs: [walk30Log] })
+        expect(describeRecordToast(walk30, before, afterWalk)).toBe('🏃 うごため 30分。あと165kcalです')
+      })
+
+      it('まだの分が0になる：「{チート名}、なかったことに。」', () => {
+        const wants = [extra('2026-11-02', 300, 'ビール×2')]
+        const before = status({ wants, mealLogs: lights('2026-11-03', 1) })
+        const after = status({ wants, mealLogs: lights('2026-11-03', 2) })
+        expect(describeRecordToast(meshitame, before, after)).toBe('ビール×2、なかったことに。')
+        const afterWalk = status({ wants, mealLogs: lights('2026-11-03', 1), exerciseLogs: [walk30Log] })
+        expect(describeRecordToast(walk30, before, afterWalk)).toBe('ビール×2、なかったことに。')
+      })
+
+      it('余りがある：「チートにあと◯kcal使えます」（カンマつき）', () => {
+        const wants = [extra('2026-11-02', 140)]
+        const before = status({ wants, mealLogs: lights('2026-11-03', 7) })
+        const after = status({ wants, mealLogs: lights('2026-11-03', 8) }) // 1,200 − 140
+        expect(describeRecordToast(meshitame, before, after)).toBe('🐷 メシため。チートにあと1,060kcal使えます')
+      })
+
+      it('今月のチートも予定もない：換算のまま', () => {
+        const before = status({})
+        expect(describeRecordToast(meshitame, before, status({ mealLogs: lights('2026-11-03', 1) }))).toBe(
+          '🐷 メシため。ビール1本ぶんです'
+        )
+        expect(describeRecordToast(walk30, before, status({ exerciseLogs: [walk30Log] }))).toBe(
+          '🏃 うごため 30分。ビール1本ぶんです'
+        )
+      })
+
+      it('今月のチートはなく、今日より後に予定がある：予定の行と同じ計算', () => {
+        const wants = [extra('2026-11-28', 450, '焼肉')]
+        const before = status({ wants })
+        const after = status({ wants, mealLogs: lights('2026-11-03', 1) })
+        expect(describeRecordToast(meshitame, before, after)).toBe('🐷 メシため。28日の焼肉まで、あと300kcalです')
+        const afterWalk = status({ wants, exerciseLogs: [walk30Log] })
+        expect(describeRecordToast(walk30, before, afterWalk)).toBe('🏃 うごため 30分。28日の焼肉まで、あと300kcalです')
+        const ready = status({ wants, mealLogs: lights('2026-11-03', 3) })
+        expect(describeRecordToast(meshitame, before, ready)).toBe('🐷 メシため。28日の焼肉は、もう準備OKです')
       })
     })
 
@@ -1830,6 +1898,78 @@ describe('◯月のチート（16章 v2.6）', () => {
       '🏃 うごため 8,000歩。ケーキ1個ぶんです'
     )
     expect(describeExerciseToast({ exercise_type: 'walking', minutes: 10, steps: null, points: 50 })).toBe('🏃 うごため 10分。')
+  })
+
+  describe('いつものうごため（16-追記 v2.6.3）', () => {
+    const ex = (
+      log_date: string,
+      exercise_type: ExerciseLogRow['exercise_type'],
+      minutes: number | null,
+      created_at = `${log_date}T09:00:00Z`
+    ) => ({ log_date, exercise_type, minutes, created_at })
+    const today = '2026-11-20'
+
+    it('種類×時間ごとの回数の多い順に2つ', () => {
+      const logs = [
+        ex('2026-11-10', 'running', 20),
+        ex('2026-11-11', 'running', 20),
+        ex('2026-11-12', 'weights', 45),
+        ex('2026-11-13', 'weights', 45),
+        ex('2026-11-14', 'weights', 45),
+        ex('2026-11-15', 'walking', 30),
+        ex('2026-11-16', 'running', 30), // 時間が違うと別のもの
+      ]
+      expect(pickFrequentExercises(logs, today)).toEqual([
+        { type: 'weights', minutes: 45 },
+        { type: 'running', minutes: 20 },
+      ])
+    })
+
+    it('同じ回数なら、最後に記録した日が新しいほうが先', () => {
+      const logs = [
+        ex('2026-11-10', 'cycling', 40),
+        ex('2026-11-18', 'running', 20),
+        ex('2026-11-12', 'sports', 60),
+        ex('2026-11-19', 'cycling', 40, '2026-11-19T07:00:00Z'),
+        ex('2026-11-19', 'sports', 60, '2026-11-19T08:00:00Z'),
+        ex('2026-11-11', 'running', 20),
+      ]
+      expect(pickFrequentExercises(logs, today)).toEqual([
+        { type: 'sports', minutes: 60 },
+        { type: 'cycling', minutes: 40 },
+      ])
+    })
+
+    it('歩数の記録と、30日より前の記録は数えない', () => {
+      const logs = [
+        ex('2026-11-15', 'steps', null),
+        ex('2026-11-16', 'steps', null),
+        ex('2026-10-21', 'cycling', 40), // 30日前（数えない）
+        ex('2026-10-22', 'sports', 60), // 今日を含めて30日目（数える）
+      ]
+      expect(pickFrequentExercises(logs, today)).toEqual([
+        { type: 'sports', minutes: 60 },
+        { type: 'walking', minutes: 30 },
+      ])
+    })
+
+    it('記録がなければ ウォーキング30分・ランニング30分', () => {
+      expect(pickFrequentExercises([], today)).toEqual([
+        { type: 'walking', minutes: 30 },
+        { type: 'running', minutes: 30 },
+      ])
+    })
+
+    it('足りないときの埋め方は、同じものを重ねない', () => {
+      expect(pickFrequentExercises([ex('2026-11-15', 'walking', 30)], today)).toEqual([
+        { type: 'walking', minutes: 30 },
+        { type: 'running', minutes: 30 },
+      ])
+      expect(pickFrequentExercises([ex('2026-11-15', 'running', 30)], today)).toEqual([
+        { type: 'running', minutes: 30 },
+        { type: 'walking', minutes: 30 },
+      ])
+    })
   })
 
   it('よく食べるもの：直近60日の回数の多い順に6つまで。頻度ベースの品も入れる', () => {
