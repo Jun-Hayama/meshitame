@@ -500,3 +500,111 @@ export interface WaterRetention {
   baselineKg: number | null // 最初の日の前日までの7日平均（記録3件未満は null）
   afterLogs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[] // チート後の記録（最初の日の翌日以降・見ている日まで。日付順）
 }
+
+// ===== v2.8 フレンドと一緒に食べる約束（18章） =====
+
+// 足あとの見え方：cleared = なかったことにした（色つき）/ pending = まだ（今月の分・先月からの持ち越し。薄く）
+// gone = 持ち越した月の月末までになかったことにできず消えた（ふつうの色）
+export type FootprintLook = 'cleared' | 'pending' | 'gone'
+
+export interface Footprint {
+  pct: number // その日の近づき具合（0〜100）
+  emoji: string
+  count: number // 同じ位置・絵文字・見え方のものをまとめた数
+  look: FootprintLook
+}
+
+export interface CheatCount {
+  emoji: string
+  count: number
+}
+
+// friend_progress に書き出す中身（kg は入れない）
+export interface FriendProgressData {
+  approachPct: number | null // null = 目標体重なし（コースに置かない）
+  detour: boolean // ちょっと寄り道中
+  waterEmoji: string | null // むくみ中の絵文字（むくみ中でなければ null）
+  waterReturnDate: string | null
+  footprints: Footprint[]
+  cheatCounts: CheatCount[]
+}
+
+export type PromisePlace = 'lunch' | 'dinner' | 'extra'
+
+export interface FriendProfileRow {
+  user_id: string
+  display_name: string
+  character_emoji: string
+  hide_cheats: boolean
+  updated_at: string
+}
+
+export interface FriendProgressRow {
+  user_id: string
+  approach_pct: number | null
+  detour: boolean
+  water_emoji: string | null
+  water_return_date: string | null
+  footprints: Footprint[]
+  cheat_counts: CheatCount[]
+  updated_at: string
+}
+
+export interface PromiseRow {
+  id: string
+  creator_id: string
+  promise_date: string
+  place: PromisePlace
+  items: CheatItemSelection[]
+  label: string
+  venue: string | null
+  status: 'active' | 'canceled'
+  created_at: string
+}
+
+export interface PromiseMemberRow {
+  promise_id: string
+  user_id: string
+  joined_at: string
+  ready_pct: number | null
+  updated_at: string | null
+  cheat_id: string | null
+}
+
+export interface FriendInviteRow {
+  id: string
+  creator_id: string
+  token: string
+  promise_id: string | null
+  expires_at: string
+  stopped_at: string | null
+  created_at: string
+}
+
+// get_invite・join_invite の状態
+export type InviteStatus =
+  | 'ok'
+  | 'not_found'
+  | 'own'
+  | 'stopped'
+  | 'expired'
+  | 'canceled'
+  | 'past'
+  | 'already'
+  | 'full'
+  | 'friend_limit'
+  | 'no_profile'
+
+export interface InviteView {
+  status: InviteStatus
+  creator_name: string | null
+  creator_character: string | null
+  promise: {
+    date: string
+    place: PromisePlace
+    items: CheatItemSelection[]
+    label: string
+    venue: string | null
+    status: 'active' | 'canceled'
+  } | null
+}

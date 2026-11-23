@@ -67,6 +67,15 @@ import { MonthMeshitameCard } from '@/components/MonthMeshitameCard'
 import { Toast } from '@/components/Toast'
 import { CheatHintSheet } from '@/components/CheatHintSheet'
 import { QuickExerciseRow } from '@/components/QuickExerciseRow'
+import { FriendCard } from '@/components/FriendCard'
+import {
+  INVITE_RETURN_QUERY,
+  clearPendingJoinToken,
+  joinPath,
+  readPendingJoinToken,
+  scheduleFriendSync,
+  syncFriendDataIfStale,
+} from '@/lib/friends'
 
 const SLOTS: { slot: MealSlot; label: string }[] = [
   { slot: 'morning', label: '朝' },
@@ -100,6 +109,8 @@ export default function Home() {
   const [exerciseSheet, setExerciseSheet] = useState<{ initial?: { type: ExerciseType; minutes: number } } | null>(null)
   const [showTargets, setShowTargets] = useState(false)
   const [hints, setHints] = useState<CheatHints | null>(null)
+  // 登録の確認メールを別のブラウザで開いて、誘いのトークンが見つからなかったとき（18章）
+  const [lostInvite, setLostInvite] = useState(false)
   const [savingExercise, setSavingExercise] = useState(false)
   const [savingSlot, setSavingSlot] = useState<MealSlot | null>(null)
   // チートが入っている食事で🐷・🍚を押したときの確認（16章 3-1）
@@ -178,8 +189,21 @@ export default function Home() {
 
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
+      // 誘いのリンクから登録・ログインしてきたら、参加のページへ戻す（18章）
+      const token = readPendingJoinToken()
+      const path = token ? joinPath(token) : null
+      if (path) {
+        clearPendingJoinToken()
+        router.replace(path)
+        return
+      }
+      if (window.location.search.includes(INVITE_RETURN_QUERY)) {
+        setLostInvite(true)
+        window.history.replaceState(null, '', '/')
+      }
       setUserId(user.id)
       load(user.id)
+      syncFriendDataIfStale(user.id)
     })
   }, [router, today, loadFrom, weightLoadFrom])
 
@@ -219,6 +243,7 @@ export default function Home() {
     setWants(w)
     setMealLogs(meals)
     setExerciseLogs(exercises)
+    scheduleFriendSync(userId)
     const durationMs = action ? UNDO_TOAST_MS : undefined
     if (record) {
       setToast({ message: describeRecordToast(record, status, after), durationMs, action })
@@ -390,6 +415,7 @@ export default function Home() {
       return
     }
     setExerciseLogs((logs) => logs.filter((l) => l.id !== id))
+    scheduleFriendSync(userId)
   }
 
   function openExtra(date: string, editing: MonthlyWantRow | null = null) {
@@ -406,6 +432,7 @@ export default function Home() {
   function handleWeightSaved(row: WeightLog) {
     const next = [...weightLogs.filter((w) => w.measured_at !== row.measured_at), row]
     setWeightLogs(next)
+    scheduleFriendSync(userId)
     const water = describeWaterReturnToast({
       retention: calcWaterRetention({ wants, mealLogs, weightLogs: next, date: row.measured_at, today }),
       weightKg: Number(row.weight_kg),
@@ -506,6 +533,15 @@ export default function Home() {
               className="bg-amber-400 text-stone-950 font-bold text-xs px-3 py-1.5 rounded-full"
             >
               今日に戻る
+            </button>
+          </div>
+        )}
+
+        {lostInvite && (
+          <div className="flex items-start justify-between gap-3 bg-stone-900 rounded-2xl px-4 py-3 mb-6">
+            <p className="text-stone-300 text-sm">登録できました。誘いのリンクをもう一度開いてください。</p>
+            <button type="button" onClick={() => setLostInvite(false)} className="text-stone-500 text-xs shrink-0">
+              閉じる
             </button>
           </div>
         )}
@@ -642,6 +678,13 @@ export default function Home() {
             />
           </div>
         </section>
+
+        {/* フレンド（18章）：今日の記録の下に1枚 */}
+        {userId && (
+          <section className="mb-8">
+            <FriendCard userId={userId} today={today} onOpen={() => router.push('/friends')} />
+          </section>
+        )}
 
       </div>
 

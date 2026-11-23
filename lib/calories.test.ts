@@ -107,6 +107,24 @@ import {
   describeWaterReturnToast,
   describeWaterReturnLine,
   getWaterCheatName,
+  calcApproachPct,
+  calcApproachOn,
+  calcCourseStatus,
+  listCheatLooks,
+  buildFootprints,
+  countCheatEmojis,
+  hideCheatContents,
+  buildFriendProgress,
+  calcPromiseReadiness,
+  isPromiseAllReady,
+  isPromiseMonthAhead,
+  describePromiseNotStarted,
+  isValidPromiseDate,
+  getPromiseDateRange,
+  splitPromises,
+  describePromiseLine,
+  describeCourseLine,
+  describeWaterBadge,
 } from '@/lib/calories'
 import type { ExerciseLogRow, MealLogRow, MonthlyWantRow, WantEntry } from '@/types'
 import { CHEAT_ITEMS } from '@/lib/cheatItems'
@@ -2286,6 +2304,289 @@ describe('戻り予報（17章）', () => {
       expect(line(up, '2026-11-24')).toBeNull() // 戻り期間を過ぎた
       expect(line([...base, { measured_at: '2026-11-22', weight_kg: 70.1 }], '2026-11-22')).toBeNull()
       expect(line(base, '2026-11-21')).toBeNull() // チート後の記録がない
+    })
+  })
+})
+
+describe('フレンドと一緒に食べる約束（18章）', () => {
+  let seq = 0
+  const want = (over: Partial<MonthlyWantRow>): MonthlyWantRow => ({
+    id: `f${seq++}`,
+    user_id: 'u',
+    kind: 'other',
+    scheduled_date: null,
+    times_per_week: null,
+    label: null,
+    is_active: true,
+    created_at: `2026-11-01T00:00:${String(seq).padStart(2, '0')}Z`,
+    cheat_type: 'addon',
+    replace_slot: null,
+    items: null,
+    total_kcal: 300,
+    ...over,
+  })
+  const item = (name: string, qty = 1) => {
+    const c = CHEAT_ITEMS.find((i) => i.name === name)!
+    return { genre: c.genre as string, name: c.name, kcal: c.kcal, qty }
+  }
+  // 追加チート（コスト = 合計）
+  const extra = (date: string, items: ReturnType<typeof item>[], total?: number) =>
+    want({ scheduled_date: date, items, total_kcal: total ?? items.reduce((s, i) => s + i.kcal * i.qty, 0) })
+  const hearty = (log_date: string, slot: 'morning' | 'lunch' | 'dinner' = 'dinner') => ({ log_date, slot, choice: 'hearty' as const })
+  const light = (log_date: string, slot: 'morning' | 'lunch' | 'dinner' = 'morning') => ({ log_date, slot, choice: 'light' as const })
+  const weights = (from: string, kgs: (number | null)[]) =>
+    kgs.flatMap((kg, i) => (kg === null ? [] : [{ measured_at: addDaysToDateStr(from, i), weight_kg: kg }]))
+  const flat = (from: string, days: number, kg: number) => weights(from, Array(days).fill(kg))
+
+  describe('近づき具合', () => {
+    it('通常：（始めた − いま）÷（始めた − 目標）', () => {
+      expect(calcApproachPct(80, 75.5, 70)).toBe(45)
+      expect(calcApproachPct(80, 75.46, 70)).toBe(45) // 四捨五入
+    })
+    it('0未満は0、100超は100', () => {
+      expect(calcApproachPct(80, 81, 70)).toBe(0)
+      expect(calcApproachPct(80, 68, 70)).toBe(100)
+    })
+    it('目標体重なし、または始めた ≦ 目標なら null', () => {
+      expect(calcApproachPct(80, 75, null)).toBeNull()
+      expect(calcApproachPct(70, 69, 70)).toBeNull()
+    })
+    it('始めた体重は最初の記録、いまはならした体重（7日間に記録がなければ最後の記録の日の平均）', () => {
+      const logs = [{ measured_at: '2026-11-01', weight_kg: 80 }, ...flat('2026-11-10', 3, 75)]
+      expect(calcApproachOn(logs, 70, '2026-11-12')).toBe(50)
+      expect(calcApproachOn(logs, 70, '2026-11-30')).toBe(50) // 11/24〜11/30 に記録なし → 11/12 の平均
+      expect(calcApproachOn(logs, 70, '2026-10-31')).toBeNull()
+    })
+  })
+
+  describe('むくみ中・寄り道中', () => {
+    const today = '2026-11-23'
+    // 11/1 80kg、11/2〜11/19 は 76kg（近づき具合 40%）
+    const before = [{ measured_at: '2026-11-01', weight_kg: 80 }, ...flat('2026-11-02', 18, 76)]
+    const ramen = [extra('2026-11-20', [item('醤油・塩')])]
+
+    it('戻り期間中で増えているときは、まとまりの最初の日の前日の位置で止めて、むくみ中を出す', () => {
+      const logs = [...before, { measured_at: '2026-11-21', weight_kg: 78 }, { measured_at: '2026-11-22', weight_kg: 78 }]
+      const r = calcCourseStatus({ logs, targetKg: 70, wants: ramen, mealLogs: [], today: '2026-11-22' })
+      expect(r.approachPct).toBe(40) // 11/19 の7日平均 76kg →（80 − 76）÷（80 − 70）。今の平均で計算すると下がる
+      expect(calcApproachOn(logs, 70, '2026-11-22')).toBeLessThan(40)
+      expect(r.waterEmoji).toBe('🍜')
+      expect(r.waterReturnDate).toBe('2026-11-23')
+      expect(r.detour).toBe(false) // むくみ中は寄り道中を出さない
+      expect(describeWaterBadge('🍜', '2026-11-23', '2026-11-22')).toBe('🍜むくみ中・23日ごろ戻りそう')
+    })
+
+    it('戻り期間を過ぎたら通常の位置', () => {
+      const logs = [...before, { measured_at: '2026-11-24', weight_kg: 78 }]
+      const r = calcCourseStatus({ logs, targetKg: 70, wants: ramen, mealLogs: [], today: '2026-11-24' })
+      expect(r.waterEmoji).toBeNull()
+      expect(r.approachPct).toBe(calcApproachOn(logs, 70, '2026-11-24'))
+    })
+
+    it('品が2つ以上か品なしの🔥チートなら、むくみ中の絵文字は🔥', () => {
+      const logs = [...before, { measured_at: '2026-11-21', weight_kg: 78 }]
+      const two = [extra('2026-11-20', [item('醤油・塩'), item('ビール500ml')])]
+      expect(calcCourseStatus({ logs, targetKg: 70, wants: two, mealLogs: [], today: '2026-11-21' }).waterEmoji).toBe('🔥')
+      expect(calcCourseStatus({ logs, targetKg: 70, wants: [], mealLogs: [hearty('2026-11-20')], today: '2026-11-21' }).waterEmoji).toBe('🔥')
+    })
+
+    it('寄り道中：むくみ中でなく、7日前の近づき具合より下がっている', () => {
+      // 11/1 80kg、11/8〜11/16 は 75kg、11/17〜11/23 は 76kg
+      const logs = [{ measured_at: '2026-11-01', weight_kg: 80 }, ...flat('2026-11-08', 9, 75), ...flat('2026-11-17', 7, 76)]
+      expect(calcCourseStatus({ logs, targetKg: 70, wants: [], mealLogs: [], today }).detour).toBe(true)
+      const steady = [{ measured_at: '2026-11-01', weight_kg: 80 }, ...flat('2026-11-08', 16, 75)]
+      expect(calcCourseStatus({ logs: steady, targetKg: 70, wants: [], mealLogs: [], today }).detour).toBe(false)
+    })
+  })
+
+  describe('足あと', () => {
+    const logs = [{ measured_at: '2026-09-01', weight_kg: 80 }, ...flat('2026-09-02', 90, 75)] // 9/2〜11/30 は 75kg（50%）
+    const base = { mealLogs: [] as { log_date: string; slot: 'morning' | 'lunch' | 'dinner'; choice: 'light' | 'normal' | 'hearty' }[], exerciseLogs: [] as { log_date: string; points: number }[], slotTargets: [] }
+
+    it('3つの見え方：なかったことにした → cleared、今月のまだ → pending、持ち越した月も届かず → gone', () => {
+      const wants = [
+        extra('2026-09-10', [item('ビール500ml')], 200), // 9月：メシため2回（300）で届く → cleared
+        extra('2026-09-20', [item('ビール500ml')], 200), // 9月：届かない → 10月に持ち越し → 10月も届かない → gone
+        extra('2026-11-10', [item('醤油・塩')], 500), // 今月：届かない → pending
+      ]
+      const mealLogs = [light('2026-09-05'), light('2026-09-06')]
+      const looks = listCheatLooks({ ...base, wants, mealLogs, today: '2026-11-23', from: '2026-09-01' })
+      expect(looks.map((l) => [l.cheat.date, l.look])).toEqual([
+        ['2026-09-10', 'cleared'],
+        ['2026-09-20', 'gone'],
+        ['2026-11-10', 'pending'],
+      ])
+    })
+
+    it('先月からの持ち越しは、今月なかったことになれば cleared、まだなら pending', () => {
+      const wants = [extra('2026-10-20', [item('ビール500ml')], 200)]
+      const pending = listCheatLooks({ ...base, wants, today: '2026-11-23', from: '2026-09-01' })
+      expect(pending[0].look).toBe('pending')
+      const cleared = listCheatLooks({ ...base, wants, mealLogs: [light('2026-11-02'), light('2026-11-03')], today: '2026-11-23', from: '2026-09-01' })
+      expect(cleared[0].look).toBe('cleared')
+    })
+
+    it('持ち越しは1か月まで（2か月後に貯めても、持ち越しの分には当たらない）', () => {
+      const wants = [extra('2026-09-20', [item('ビール500ml')], 200)]
+      const looks = listCheatLooks({ ...base, wants, mealLogs: [light('2026-11-02'), light('2026-11-03')], today: '2026-11-23', from: '2026-09-01' })
+      expect(looks[0].look).toBe('gone')
+    })
+
+    it('同じ位置・絵文字・見え方はまとめ、新しいものから30個まで', () => {
+      const wants = Array.from({ length: 35 }, (_, i) => extra(addDaysToDateStr('2026-11-01', i % 20), [item('ビール500ml')], 200))
+      const looks = listCheatLooks({ ...base, wants, today: '2026-11-23', from: '2026-09-01' })
+      const fps = buildFootprints(looks, logs, 70)
+      expect(fps).toEqual([{ pct: 50, emoji: '🍺', count: 30, look: 'pending' }])
+    })
+
+    it('品なしの🔥チートは🔥', () => {
+      const looks = listCheatLooks({ ...base, wants: [], mealLogs: [hearty('2026-11-05')], today: '2026-11-23', from: '2026-09-01' })
+      expect(buildFootprints(looks, logs, 70)[0].emoji).toBe('🔥')
+    })
+  })
+
+  describe('チートの数の集計', () => {
+    const progress = (wants: MonthlyWantRow[], mealLogs: ReturnType<typeof hearty>[], hide = false) =>
+      buildFriendProgress({
+        wants,
+        mealLogs,
+        exerciseLogs: [],
+        slotTargets: [],
+        today: '2026-11-23',
+        logs: [{ measured_at: '2026-11-01', weight_kg: 80 }, ...flat('2026-11-17', 7, 75.5)],
+        targetKg: 70,
+        hide,
+      })
+
+    it('数量で数え、品なしの🔥は回数、多い順に3種類、予定は数えない', () => {
+      const wants = [
+        extra('2026-11-05', [item('ビール500ml', 4), item('醤油・塩')]),
+        extra('2026-11-10', [item('ビール350ml', 8)]),
+        extra('2026-11-12', [item('ショートケーキ', 2)]),
+        extra('2026-11-14', [item('醤油・塩'), item('家系')]),
+        extra('2026-11-28', [item('ビール500ml', 10)]), // 予定
+      ]
+      const r = progress(wants, [hearty('2026-11-06')])
+      expect(r.cheatCounts).toEqual([
+        { emoji: '🍺', count: 12 },
+        { emoji: '🍜', count: 3 },
+        { emoji: '🍰', count: 2 },
+      ])
+      expect(describeCourseLine(r.cheatCounts.slice(0, 2), r.approachPct!)).toBe('🍺×12 🍜×3 食べて、目標体重まで45%')
+      expect(countCheatEmojis([])).toEqual([])
+    })
+
+    it('始めた日より前のチートは数えない', () => {
+      const r = progress([extra('2026-10-30', [item('ビール500ml')])], [])
+      expect(r.cheatCounts).toEqual([])
+    })
+
+    it('隠す設定：足あと・集計・むくみ中の絵文字が🍽に置き換わる', () => {
+      const wants = [extra('2026-11-05', [item('ビール500ml', 4)]), extra('2026-11-06', [item('醤油・塩')])]
+      const r = progress(wants, [hearty('2026-11-07')], true)
+      expect(r.cheatCounts).toEqual([{ emoji: '🍽', count: 6 }])
+      expect(r.footprints.every((f) => f.emoji === '🍽')).toBe(true)
+      expect(r.footprints.reduce((s, f) => s + f.count, 0)).toBe(3)
+      const hidden = hideCheatContents({
+        approachPct: 40,
+        detour: false,
+        waterEmoji: '🍜',
+        waterReturnDate: '2026-11-26',
+        footprints: [
+          { pct: 40, emoji: '🍜', count: 1, look: 'pending' },
+          { pct: 40, emoji: '🍺', count: 2, look: 'pending' },
+          { pct: 30, emoji: '🍺', count: 1, look: 'cleared' },
+        ],
+        cheatCounts: [{ emoji: '🍺', count: 3 }, { emoji: '🍜', count: 1 }],
+      })
+      expect(hidden.waterEmoji).toBe('🍽')
+      expect(hidden.footprints).toEqual([
+        { pct: 40, emoji: '🍽', count: 3, look: 'pending' },
+        { pct: 30, emoji: '🍽', count: 1, look: 'cleared' },
+      ])
+      expect(hidden.cheatCounts).toEqual([{ emoji: '🍽', count: 4 }])
+    })
+
+    it('目標体重がなければコースに置かない（足あともなし）', () => {
+      const r = buildFriendProgress({
+        wants: [extra('2026-11-05', [item('ビール500ml')])],
+        mealLogs: [],
+        exerciseLogs: [],
+        slotTargets: [],
+        today: '2026-11-23',
+        logs: [{ measured_at: '2026-11-01', weight_kg: 80 }],
+        targetKg: null,
+        hide: false,
+      })
+      expect(r.approachPct).toBeNull()
+      expect(r.footprints).toEqual([])
+      expect(r.cheatCounts).toEqual([{ emoji: '🍺', count: 1 }])
+    })
+  })
+
+  describe('約束の準備の具合', () => {
+    const today = '2026-11-10'
+    const status = (wants: MonthlyWantRow[], mealLogs: ReturnType<typeof light>[]) =>
+      calcMonthCheatStatus({ year: 2026, month: 11, today, wants, mealLogs, exerciseLogs: [], slotTargets: [] })
+
+    it('予定の準備と同じ計算：余りを日付順に当て、その約束に当たった割合', () => {
+      const first = extra('2026-11-15', [item('ビール500ml')], 200)
+      const promise = extra('2026-11-20', [item('醤油・塩')], 400)
+      const s = status([first, promise], [light('2026-11-01'), light('2026-11-02'), light('2026-11-03')]) // 450 貯めた
+      expect(calcPromiseReadiness(s, first.id, '2026-11-15', today)).toBe(100)
+      expect(calcPromiseReadiness(s, promise.id, '2026-11-20', today)).toBe(62) // (450 − 200) ÷ 400
+      expect(s.planned.find((p) => p.cheat.key === promise.id)!.shortKcal).toBe(150)
+    })
+
+    it('約束の当日は食べた分の並びで出す', () => {
+      const promise = extra('2026-11-10', [item('醤油・塩')], 300)
+      const s = status([promise], [light('2026-11-01')])
+      expect(calcPromiseReadiness(s, promise.id, '2026-11-10', today)).toBe(50)
+    })
+
+    it('約束の月がまだなら null、チートが見つからなければ null', () => {
+      const s = status([], [])
+      expect(calcPromiseReadiness(s, 'x', '2026-12-05', today)).toBeNull()
+      expect(isPromiseMonthAhead('2026-12-05', today)).toBe(true)
+      expect(describePromiseNotStarted('2026-12-05')).toBe('12月に入ったら貯めはじめ')
+      expect(calcPromiseReadiness(s, 'x', '2026-11-20', today)).toBeNull()
+    })
+
+    it('全員100%なら「みんな準備OK」', () => {
+      expect(isPromiseAllReady([100, 100])).toBe(true)
+      expect(isPromiseAllReady([100, 80])).toBe(false)
+      expect(isPromiseAllReady([100, null])).toBe(false)
+      expect(isPromiseAllReady([])).toBe(false)
+    })
+  })
+
+  describe('約束の日付と一覧', () => {
+    it('明日から60日以内だけ', () => {
+      const today = '2026-11-23'
+      expect(isValidPromiseDate('2026-11-23', today)).toBe(false)
+      expect(isValidPromiseDate('2026-11-24', today)).toBe(true)
+      expect(isValidPromiseDate('2027-01-22', today)).toBe(true)
+      expect(isValidPromiseDate('2027-01-23', today)).toBe(false)
+      expect(getPromiseDateRange(today)).toEqual({ min: '2026-11-24', max: '2027-01-22' })
+    })
+
+    it('約束の行：「🥩 20日の焼肉まで、あと27日」／当日は「今日は焼肉の日」', () => {
+      const p = { promise_date: '2026-12-20', label: '焼肉', items: [item('焼肉（ふつう）')] }
+      expect(describePromiseLine(p, '2026-11-23')).toBe('🥩 12月20日の焼肉まで、あと27日')
+      expect(describePromiseLine({ ...p, promise_date: '2026-11-30' }, '2026-11-23')).toBe('🥩 30日の焼肉まで、あと7日')
+      expect(describePromiseLine({ ...p, promise_date: '2026-11-23' }, '2026-11-23')).toBe('🥩 今日は焼肉の日')
+    })
+
+    it('約束の日を過ぎたらこれまでへ、30日たったら隠す', () => {
+      const ps = [
+        { id: 'a', promise_date: '2026-11-30', status: 'active' },
+        { id: 'b', promise_date: '2026-11-20', status: 'active' },
+        { id: 'c', promise_date: '2026-10-20', status: 'active' },
+        { id: 'd', promise_date: '2026-12-05', status: 'canceled' },
+      ]
+      const r = splitPromises(ps, '2026-11-23')
+      expect(r.upcoming.map((p) => p.id)).toEqual(['a'])
+      expect(r.past.map((p) => p.id)).toEqual(['d', 'b'])
     })
   })
 })

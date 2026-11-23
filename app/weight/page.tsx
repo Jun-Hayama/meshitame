@@ -10,6 +10,7 @@ import { MilestoneCards } from '@/components/MilestoneCards'
 import { Toast } from '@/components/Toast'
 import { useMilestones } from '@/lib/milestones'
 import { useReducePace } from '@/lib/reducePace'
+import { scheduleFriendSync } from '@/lib/friends'
 import type { CheatChartPeriod, ExerciseLogRow, GoalPlanRow, MealLogRow, MonthlyWantRow, WeightLog } from '@/types'
 import {
   addDaysToDateStr,
@@ -152,6 +153,7 @@ export default function WeightPage() {
       a.measured_at.localeCompare(b.measured_at)
     )
     setLogs(next)
+    scheduleFriendSync(userId)
     const water = describeWaterReturnToast({
       retention: calcWaterRetention({ wants, mealLogs: heartyLogs, weightLogs: next, date: row.measured_at, today }),
       weightKg: Number(row.weight_kg),

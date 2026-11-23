@@ -55,6 +55,7 @@ export function CheatItemPicker({
   target,
   editing = null,
   canRemove = false,
+  planOptions,
   onClose,
   onSaved,
   onRemoved,
@@ -65,6 +66,8 @@ export function CheatItemPicker({
   target: CheatPickerTarget
   editing?: MonthlyWantRow | null // 直すチート（meal・extra）
   canRemove?: boolean // 「取り消す」を出す（editing がなくても、品なしの🔥チートがあるとき）
+  // plan の日付の範囲・選べる食事・見出し・ボタン名（一緒に食べる約束：明日から60日以内・昼／夜／追加チート）
+  planOptions?: { min: string; max: string; places: CheatPlace[]; title?: string; submitLabel?: string }
   onClose: () => void
   onSaved: (row: MonthlyWantRow | null) => void // meal で品を選ばなかったときは null
   onRemoved?: () => void
@@ -141,8 +144,12 @@ export function CheatItemPicker({
   const slotTarget = slotTargets.find((t) => t.slot === slot)
   const allowEmpty = target.kind === 'meal'
 
+  const minDate = planOptions?.min ?? today
+  const places = planOptions?.places ?? PLACES
   const title =
-    target.kind === 'meal'
+    planOptions?.title && target.kind === 'plan'
+      ? planOptions.title
+      : target.kind === 'meal'
       ? `${MEAL_NAMES[target.slot]}をチートに`
       : target.kind === 'extra'
         ? '追加チートを足す'
@@ -201,6 +208,10 @@ export function CheatItemPicker({
     }
     if (target.kind === 'plan' && date < today) {
       setError('日付は今日以降にしてください')
+      return
+    }
+    if (target.kind === 'plan' && planOptions && (date < planOptions.min || date > planOptions.max)) {
+      setError('日付は明日から60日以内にしてください')
       return
     }
     setSaving(true)
@@ -280,12 +291,13 @@ export function CheatItemPicker({
             <input
               type="date"
               value={date}
-              min={today}
+              min={minDate}
+              max={planOptions?.max}
               onChange={(e) => setDate(e.target.value)}
               className="w-full bg-stone-950 border border-stone-800 rounded-2xl px-4 py-3 text-sm"
             />
             <div className="flex gap-1.5">
-              {PLACES.map((p) => (
+              {places.map((p) => (
                 <button key={p} type="button" onClick={() => setPlace(p)} className={`flex-1 ${chip(place === p)}`}>
                   {CHEAT_PLACE_LABELS[p]}
                 </button>
@@ -456,7 +468,7 @@ export function CheatItemPicker({
           onClick={save}
           className="w-full bg-amber-400 text-stone-950 font-bold py-3.5 rounded-2xl text-sm disabled:opacity-50"
         >
-          {saving ? '保存中...' : target.kind === 'plan' ? '予定に入れる' : '保存する'}
+          {saving ? '保存中...' : target.kind === 'plan' ? planOptions?.submitLabel ?? '予定に入れる' : '保存する'}
         </button>
         {(editing || canRemove) && onRemoved && (
           <button

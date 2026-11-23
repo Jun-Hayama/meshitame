@@ -168,3 +168,19 @@ export const WATER_TOAST_MAX_DAY = 5
 export const WATER_UP_KG = 0.3
 export const WATER_BACK_KG = 0.2
 export const WATER_TOAST_MS = 4000
+
+// フレンドと一緒に食べる約束（18章）
+export const FRIEND_CHARACTERS = ['🐷', '🐔', '🐮', '🐻', '🐱', '🐶'] as const
+export const FRIEND_DEFAULT_CHARACTER = '🐷'
+export const FRIEND_NAME_MAX = 12
+export const FRIEND_MAX = 10 // 友だちは10人まで（双方）
+export const PROMISE_MAX_MEMBERS = 6 // 作った人を含めて6人
+export const PROMISE_MAX_DAYS_AHEAD = 60 // 約束の日：明日から60日以内
+export const PROMISE_VENUE_MAX = 30
+export const PROMISE_PAST_VISIBLE_DAYS = 30 // これまでの約束は、約束の日から30日たったら隠す
+export const INVITE_VALID_DAYS = 7
+export const FOOTPRINT_MAX = 30 // 足あとは新しいものから30個
+export const CHEAT_COUNT_MAX_KINDS = 3 // チートの数の集計は多い順に3種類
+export const HIDDEN_CHEAT_EMOJI = '🍽' // チートの中身を見せないときの絵文字
+export const FRIEND_SYNC_STALE_MS = 60 * 60 * 1000 // 今日の画面を開いたとき、前回から1時間以上たっていれば書き出す
+export const FRIEND_SYNC_DEBOUNCE_MS = 3000 // 記録が続いたときは最後の1回だけ書き出す

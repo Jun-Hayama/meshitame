@@ -44,6 +44,7 @@ import {
   getWeekRange,
 } from '@/lib/calories'
 import { LOG_DAYS } from '@/lib/calorieConstants'
+import { scheduleFriendSync } from '@/lib/friends'
 
 const SLOT_LABELS: Record<MealSlot, string> = { morning: '朝', lunch: '昼', dinner: '夜' }
 const FILTERS: { value: LogFilter; label: string }[] = [
@@ -124,6 +125,7 @@ export default function LogPage() {
     const cleared = detectNewlyCleared(status, statusFor(meals, exercises))
     setMealLogs(meals)
     setExerciseLogs(exercises)
+    scheduleFriendSync(userId)
     if (cleared) setToast(`${getCheatName(cleared)}、なかったことに。`)
   }
 

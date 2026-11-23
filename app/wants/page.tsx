@@ -19,6 +19,8 @@ import {
   type MonthlyWantRow,
 } from '@/types'
 import { useReducePace } from '@/lib/reducePace'
+import { savePlannedHearty } from '@/lib/plannedCheat'
+import { scheduleFriendSync } from '@/lib/friends'
 import {
   calcDailyIntakeFromPace,
   calcMealSlotTargets,
@@ -149,26 +151,19 @@ export default function WantsPage() {
       }
     }
     setRows((prev) => prev.filter((r) => r.id !== row.id))
+    scheduleFriendSync(userId)
   }
 
   async function handlePlanned(row: MonthlyWantRow | null) {
     setAddDate(null)
     if (!row || !userId) return
     setRows((prev) => [...prev, row])
-    const place = getCheatPlace(row)
-    if (place === 'extra' || !row.scheduled_date) return
-    const { data, error: upErr } = await supabase
-      .from('meal_logs')
-      .upsert({ user_id: userId, log_date: row.scheduled_date, slot: place, choice: 'hearty' }, { onConflict: 'user_id,log_date,slot' })
-      .select()
-      .maybeSingle()
-    if (upErr) {
-      setError(upErr.message)
-      return
-    }
-    if (data) {
-      const log = data as MealLogRow
-      setMealLogs((prev) => [...prev.filter((l) => !(l.log_date === log.log_date && l.slot === log.slot)), log])
+    scheduleFriendSync(userId)
+    try {
+      const log = await savePlannedHearty(userId, row)
+      if (log) setMealLogs((prev) => [...prev.filter((l) => !(l.log_date === log.log_date && l.slot === log.slot)), log])
+    } catch (e) {
+      setError((e as { message?: string }).message ?? '保存できませんでした')
     }
   }
 

@@ -51,6 +51,10 @@ import {
   RecordToastInput,
   CheatHints,
   WaterRetention,
+  Footprint,
+  FootprintLook,
+  CheatCount,
+  FriendProgressData,
 } from '@/types'
 import {
   WANT_KIND_EMOJI,
@@ -106,6 +110,11 @@ import {
   WATER_TOAST_MAX_DAY,
   WATER_UP_KG,
   WATER_BACK_KG,
+  PROMISE_MAX_DAYS_AHEAD,
+  PROMISE_PAST_VISIBLE_DAYS,
+  FOOTPRINT_MAX,
+  CHEAT_COUNT_MAX_KINDS,
+  HIDDEN_CHEAT_EMOJI,
 } from '@/lib/calorieConstants'
 import { CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
@@ -1752,7 +1761,7 @@ export function detectNewMilestones(
 // 判定はアイテム表の印（lib/foodItems.ts の waterHeavy）と決まったルールだけ。保存した記録から毎回計算する
 
 type MealLogLike = { log_date: string; slot: MealSlot; choice: MealChoice }
-type WaterItem = { key: string; name: string }
+type WaterItem = { key: string; name: string; emoji: string }
 type WaterSources = { items: WaterItem[]; hearty: boolean }
 
 // 品がむくみやすいか。辞書にない品（自由入力）は中身がわからないので、むくみやすいとして扱う
@@ -1764,11 +1773,17 @@ function isWaterHeavyItem(item: Pick<CheatItemSelection, 'genre' | 'name'>): boo
 // チートの行のむくみやすい品。名前は辞書の名前から（…）を外したもの（自由入力は入れた名前）
 // 品が入っていない古い行は中身がわからないので、行そのものを1つの品として扱う
 function waterHeavyItemsOfRow(row: Pick<MonthlyWantRow, 'id' | 'items' | 'kind' | 'label'>): WaterItem[] {
-  if (!row.items?.length) return [{ key: `row:${row.id}`, name: row.label || WANT_KIND_LABELS[row.kind] }]
+  if (!row.items?.length) {
+    return [{ key: `row:${row.id}`, name: row.label || WANT_KIND_LABELS[row.kind], emoji: WANT_KIND_EMOJI[row.kind] }]
+  }
   return row.items.filter(isWaterHeavyItem).map((i) => {
     const key = `${i.genre}:${i.name}`
     const food = CHEAT_ITEM_FOOD.get(key)
-    return { key, name: food ? shortFoodName(FOOD_ITEM_MAP[food.foodId].name) : i.name }
+    return {
+      key,
+      name: food ? shortFoodName(FOOD_ITEM_MAP[food.foodId].name) : i.name,
+      emoji: genreDef(i.genre)?.emoji ?? WANT_KIND_EMOJI[row.kind],
+    }
   })
 }
 
@@ -1884,6 +1899,13 @@ export function getWaterCheatName(input: { wants: MonthlyWantRow[]; mealLogs: Me
   return items.size === 1 && !sources?.hearty ? [...items.values()][0] : 'チート'
 }
 
+// むくみ中：戻り期間中で、最新のチート後の記録が基準＋0.3kg以上（体重タブの行・コースで使う）
+export function isWaterSwollen(r: WaterRetention): boolean {
+  if (!r.inReturnPeriod || r.baselineKg === null) return false
+  const latest = r.afterLogs.at(-1)
+  return !!latest && diffFromBaseline(latest.weight_kg, r.baselineKg) >= WATER_UP_KG
+}
+
 // 体重タブの記録カードの下：「ラーメンから2日目。26日ごろには戻りそうです。」
 // 戻り期間中で、最新のチート後の記録が基準＋0.3kg以上のときだけ。それ以外は null
 export function describeWaterReturnLine(input: {
@@ -1893,9 +1915,297 @@ export function describeWaterReturnLine(input: {
   today: string
 }): string | null {
   const { retention: r, wants, mealLogs, today } = input
-  if (!r || !r.inReturnPeriod || r.baselineKg === null) return null
-  const latest = r.afterLogs.at(-1)
-  if (!latest || diffFromBaseline(latest.weight_kg, r.baselineKg) < WATER_UP_KG) return null
+  if (!r || !isWaterSwollen(r)) return null
   const name = getWaterCheatName({ wants, mealLogs, date: r.lastDate })
   return `${name}から${r.dayNumber}日目。${formatDayInText(r.returnDate, today)}ごろには戻りそうです。`
+}
+
+// --- 18. v2.8 フレンドと一緒に食べる約束 ---
+// 友だちに見せるのは「頑張っていること」と「目標体重への近づき具合（%）」だけ。kg はどこにも出さない
+
+// 近づき具合(%) =（始めた体重 − いまの体重）÷（始めた体重 − 目標体重）× 100。0〜100 の整数
+// 目標体重がない、または始めた体重 ≦ 目標体重なら null（コースに置かない）
+export function calcApproachPct(startKg: number, nowKg: number, targetKg: number | null): number | null {
+  if (targetKg === null || !(startKg > targetKg)) return null
+  const pct = ((startKg - nowKg) / (startKg - targetKg)) * 100
+  return Math.min(100, Math.max(0, Math.round(pct)))
+}
+
+// ならした体重：その日の7日平均。7日間に記録がなければ、それより前で最後に記録した日の7日平均
+export function getSmoothedWeight(logs: WeightPoint[], date: string): number | null {
+  const avg = calcWeightAverage(logs, date).avgKg
+  if (avg !== null) return avg
+  const last = logs.filter((l) => l.measured_at <= date).reduce<string | null>((m, l) => (m === null || l.measured_at > m ? l.measured_at : m), null)
+  return last === null ? null : calcWeightAverage(logs, last).avgKg
+}
+
+// 始めた日：最初に体重を記録した日（v2.4 の「はじめてから」と同じ起点）
+function firstWeightLog(logs: WeightPoint[]): WeightPoint | null {
+  return logs.reduce<WeightPoint | null>((m, l) => (m === null || l.measured_at < m.measured_at ? l : m), null)
+}
+
+// その日の近づき具合
+export function calcApproachOn(logs: WeightPoint[], targetKg: number | null, date: string): number | null {
+  const first = firstWeightLog(logs)
+  if (!first || date < first.measured_at) return null
+  const now = getSmoothedWeight(logs, date)
+  return now === null ? null : calcApproachPct(Number(first.weight_kg), now, targetKg)
+}
+
+// むくみ中の絵文字：まとまりの最後の日の品が1つならその品の絵文字、2つ以上か品なしの🔥チートなら🔥
+export function getWaterCheatEmoji(input: { wants: MonthlyWantRow[]; mealLogs: MealLogLike[]; date: string }): string {
+  const sources = listWaterSourcesByDay({ ...input, until: input.date }).get(input.date)
+  const items = new Map((sources?.items ?? []).map((i) => [i.key, i.emoji]))
+  return items.size === 1 && !sources?.hearty ? [...items.values()][0] : MEAL_CHOICE_EMOJI.hearty
+}
+
+// コースの位置と一言
+// むくみ中：近づき具合はまとまりの最初の日の前日の値で止める（チートで後ろに下がって見えないように）
+// ちょっと寄り道中：むくみ中でなく、7日前の近づき具合より下がっている
+export function calcCourseStatus(input: {
+  logs: WeightPoint[]
+  targetKg: number | null
+  wants: MonthlyWantRow[]
+  mealLogs: MealLogLike[]
+  today: string
+}): Pick<FriendProgressData, 'approachPct' | 'detour' | 'waterEmoji' | 'waterReturnDate'> {
+  const { logs, targetKg, wants, mealLogs, today } = input
+  const retention = calcWaterRetention({ wants, mealLogs, weightLogs: logs, date: today, today })
+  if (retention && isWaterSwollen(retention)) {
+    return {
+      approachPct: calcApproachOn(logs, targetKg, addDaysToDateStr(retention.firstDate, -1)),
+      detour: false,
+      waterEmoji: getWaterCheatEmoji({ wants, mealLogs, date: retention.lastDate }),
+      waterReturnDate: retention.returnDate,
+    }
+  }
+  const now = calcApproachOn(logs, targetKg, today)
+  const weekAgo = calcApproachOn(logs, targetKg, addDaysToDateStr(today, -WEIGHT_AVG_DAYS))
+  return {
+    approachPct: now,
+    detour: now !== null && weekAgo !== null && now < weekAgo,
+    waterEmoji: null,
+    waterReturnDate: null,
+  }
+}
+
+// 月の一覧（from の月〜to の月）
+function monthsBetween(from: string, to: string): { year: number; month: number }[] {
+  const list: { year: number; month: number }[] = []
+  let m = { year: Number(from.slice(0, 4)), month: Number(from.slice(5, 7)) }
+  const end = Number(to.slice(0, 4)) * 12 + Number(to.slice(5, 7))
+  while (m.year * 12 + m.month <= end) {
+    list.push(m)
+    m = shiftMonth(m.year, m.month, 1)
+  }
+  return list
+}
+
+type CheatHistoryInput = {
+  wants: MonthlyWantRow[]
+  mealLogs: MealLogLike[]
+  exerciseLogs: { log_date: string; points: number }[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+  today: string
+}
+
+// 始めた日〜今日のチートと、それぞれの見え方（v2.6・v2.6.1 の順番と持ち越しのルールを月ごとに使う）
+// その月になかったことにした → cleared。できなかったものは翌月に持ち越し、翌月の持ち越しの分がなかったことになれば cleared
+// 持ち越しが今月 → pending。持ち越した月が終わってもなかったことにできなかった → gone
+// 一部だけ当たったチートは、まるごと「まだ」として扱う
+export function listCheatLooks(input: CheatHistoryInput & { from: string }): { cheat: MonthCheat; look: FootprintLook }[] {
+  const { from, today } = input
+  if (from > today) return []
+  const currentKey = today.slice(0, 7)
+  const statuses = new Map<string, MonthCheatStatus>()
+  const statusOf = (m: { year: number; month: number }) => {
+    const key = monthPrefix(m.year, m.month)
+    if (!statuses.has(key)) {
+      const end = getMonthDateRange(m.year, m.month).to
+      statuses.set(key, calcMonthCheatStatus({ ...input, year: m.year, month: m.month, today: end < today ? end : today }))
+    }
+    return statuses.get(key) as MonthCheatStatus
+  }
+  const result: { cheat: MonthCheat; look: FootprintLook }[] = []
+  for (const m of monthsBetween(from, today)) {
+    const status = statusOf(m)
+    const key = monthPrefix(m.year, m.month)
+    const next = shiftMonth(m.year, m.month, 1)
+    const nextKey = monthPrefix(next.year, next.month)
+    for (const e of status.entries) {
+      if (e.cheat.kind === 'carryover' || e.cheat.date < from) continue
+      let look: FootprintLook
+      if (e.cleared) look = 'cleared'
+      else if (key === currentKey) look = 'pending'
+      else {
+        const carried = statusOf(next).entries.find((x) => x.cheat.kind === 'carryover')
+        look = carried?.cleared ? 'cleared' : nextKey === currentKey ? 'pending' : 'gone'
+      }
+      result.push({ cheat: e.cheat, look })
+    }
+  }
+  return result
+}
+
+// 足あと：そのチートを食べた日の近づき具合の位置に、品の絵文字（品なしの🔥チートは🔥）
+// 新しいものから30個まで。同じ位置・絵文字・見え方のものは「🍺×3」にまとめる
+export function buildFootprints(
+  looks: { cheat: MonthCheat; look: FootprintLook }[],
+  logs: WeightPoint[],
+  targetKg: number | null
+): Footprint[] {
+  const newest = [...looks].sort((a, b) => compareCheats(b.cheat, a.cheat)).slice(0, FOOTPRINT_MAX)
+  const result: Footprint[] = []
+  for (const { cheat, look } of newest) {
+    const pct = calcApproachOn(logs, targetKg, cheat.date)
+    if (pct === null) continue
+    const emoji = getCheatEmoji(cheat)
+    const same = result.find((f) => f.pct === pct && f.emoji === emoji && f.look === look)
+    if (same) same.count += 1
+    else result.push({ pct, emoji, count: 1, look })
+  }
+  return result
+}
+
+// チートの数の集計：品の数量（ジャンルの絵文字ごと）と、品なしの🔥チートの回数。多い順（同じ数なら先に出たもの）
+// 予定のチートは数えない（cheats は今日までのもの）
+export function countCheatEmojis(cheats: MonthCheat[]): CheatCount[] {
+  const counts = new Map<string, number>()
+  const add = (emoji: string, n: number) => counts.set(emoji, (counts.get(emoji) ?? 0) + n)
+  for (const c of cheats) {
+    if (c.kind === 'carryover') continue
+    if (c.kind === 'hearty' || !c.row) {
+      add(MEAL_CHOICE_EMOJI.hearty, 1)
+      continue
+    }
+    const row = c.row
+    if (!row.items?.length) add(WANT_KIND_EMOJI[row.kind], 1)
+    else for (const i of row.items) add(genreDef(i.genre)?.emoji ?? WANT_KIND_EMOJI[row.kind], i.qty)
+  }
+  return [...counts.entries()].map(([emoji, count]) => ({ emoji, count })).sort((a, b) => b.count - a.count)
+}
+
+// 隠す設定：足あと・チートの数・むくみ中の絵文字をすべて🍽に（書き出す前に本人の画面で置き換える）
+export function hideCheatContents(data: FriendProgressData): FriendProgressData {
+  const footprints: Footprint[] = []
+  for (const f of data.footprints) {
+    const same = footprints.find((x) => x.pct === f.pct && x.look === f.look)
+    if (same) same.count += f.count
+    else footprints.push({ ...f, emoji: HIDDEN_CHEAT_EMOJI })
+  }
+  const total = data.cheatCounts.reduce((sum, c) => sum + c.count, 0)
+  return {
+    ...data,
+    footprints,
+    cheatCounts: total > 0 ? [{ emoji: HIDDEN_CHEAT_EMOJI, count: total }] : [],
+    waterEmoji: data.waterEmoji === null ? null : HIDDEN_CHEAT_EMOJI,
+  }
+}
+
+// friend_progress に書き出す中身。始めた日（最初に体重を記録した日）から今日まで
+export function buildFriendProgress(
+  input: CheatHistoryInput & { logs: WeightPoint[]; targetKg: number | null; hide: boolean }
+): FriendProgressData {
+  const { logs, targetKg, hide, today } = input
+  const first = firstWeightLog(logs)
+  const course = calcCourseStatus({ ...input })
+  const looks = first ? listCheatLooks({ ...input, from: first.measured_at }) : []
+  const data: FriendProgressData = {
+    ...course,
+    footprints: course.approachPct === null ? [] : buildFootprints(looks, logs, targetKg),
+    cheatCounts: first
+      ? countCheatEmojis(listCheatsInRange({ ...input, from: first.measured_at, to: today }))
+      : [],
+  }
+  const shown = hide ? hideCheatContents(data) : data
+  return { ...shown, cheatCounts: shown.cheatCounts.slice(0, CHEAT_COUNT_MAX_KINDS) }
+}
+
+// 約束までの準備の具合（0〜100%）：v2.6 の「予定の準備」と同じく、余りを今月の予定に日付順に当て、その約束に当たった割合
+// 約束の当日は、食べた分の並びで同じように出す。約束の月がまだ始まっていなければ null。チートが見つからなければ null
+// チートが0kcal（食事の目安以下）なら100%
+export function calcPromiseReadiness(status: MonthCheatStatus, cheatId: string | null, promiseDate: string, today: string): number | null {
+  if (!cheatId || promiseDate.slice(0, 7) !== today.slice(0, 7) || promiseDate < today) return null
+  const pct = (covered: number, cost: number) => (cost <= 0 ? 100 : Math.floor((covered / cost) * 100))
+  if (promiseDate === today) {
+    const e = status.entries.find((x) => x.cheat.key === cheatId)
+    if (!e) return null
+    const cost = e.cheat.costKcal
+    return pct(Math.min(cost, Math.max(0, status.savedKcal - (e.cumulativeKcal - cost))), cost)
+  }
+  const plan = status.planned.find((x) => x.cheat.key === cheatId)
+  if (!plan) return null
+  const cost = plan.cheat.costKcal
+  return pct(cost - Math.min(cost, plan.shortKcal), cost)
+}
+
+// 約束の月がまだ始まっていない
+export function isPromiseMonthAhead(promiseDate: string, today: string): boolean {
+  return promiseDate.slice(0, 7) > today.slice(0, 7)
+}
+
+// 「12月に入ったら貯めはじめ」
+export function describePromiseNotStarted(promiseDate: string): string {
+  return `${Number(promiseDate.slice(5, 7))}月に入ったら貯めはじめ`
+}
+
+// 全員が100%（みんな準備OK）
+export function isPromiseAllReady(readiness: (number | null)[]): boolean {
+  return readiness.length > 0 && readiness.every((r) => r === 100)
+}
+
+// 約束の日付：明日から60日以内
+export function getPromiseDateRange(today: string): { min: string; max: string } {
+  return { min: addDaysToDateStr(today, 1), max: addDaysToDateStr(today, PROMISE_MAX_DAYS_AHEAD) }
+}
+
+export function isValidPromiseDate(date: string, today: string): boolean {
+  const { min, max } = getPromiseDateRange(today)
+  return date >= min && date <= max
+}
+
+// 約束を「これから」「これまで」に分ける。これまでは約束の日から30日たったら隠す。取りやめたものもこれまでに
+export function splitPromises<T extends { promise_date: string; status: string }>(
+  promises: T[],
+  today: string
+): { upcoming: T[]; past: T[] } {
+  const hideBefore = addDaysToDateStr(today, -PROMISE_PAST_VISIBLE_DAYS)
+  const byDate = [...promises].sort((a, b) => a.promise_date.localeCompare(b.promise_date))
+  return {
+    upcoming: byDate.filter((p) => p.status === 'active' && p.promise_date >= today),
+    past: byDate
+      .filter((p) => (p.status !== 'active' || p.promise_date < today) && p.promise_date >= hideBefore)
+      .reverse(),
+  }
+}
+
+// 約束の絵文字：最初の品のジャンルの絵文字（品がなければ★）
+export function getPromiseEmoji(items: Pick<CheatItemSelection, 'genre'>[]): string {
+  return (items[0] && genreDef(items[0].genre)?.emoji) || WANT_KIND_EMOJI.other
+}
+
+// 「🍖 20日の焼肉まで、あと27日」／当日は「🍖 今日は焼肉の日」
+export function describePromiseLine(
+  promise: { promise_date: string; label: string; items: Pick<CheatItemSelection, 'genre'>[] },
+  today: string
+): string {
+  const emoji = getPromiseEmoji(promise.items)
+  if (promise.promise_date === today) return `${emoji} 今日は${promise.label}の日`
+  return `${emoji} ${formatDayInText(promise.promise_date, today)}の${promise.label}まで、あと${daysBetween(today, promise.promise_date)}日`
+}
+
+// 約束の名前：「20日の焼肉」
+export function describePromiseName(promise: { promise_date: string; label: string }, today: string): string {
+  return `${formatDayInText(promise.promise_date, today)}の${promise.label}`
+}
+
+// コースの各レーンの下：「🍺×12 🍜×3 食べて、目標体重まで45%」
+export function describeCourseLine(counts: CheatCount[], approachPct: number): string {
+  const eaten = counts.map((c) => `${c.emoji}×${c.count}`).join(' ')
+  return eaten ? `${eaten} 食べて、目標体重まで${approachPct}%` : `目標体重まで${approachPct}%`
+}
+
+// 名前の横：「🍜むくみ中・26日ごろ戻りそう」
+export function describeWaterBadge(emoji: string, returnDate: string, today: string): string {
+  return `${emoji}むくみ中・${formatDayInText(returnDate, today)}ごろ戻りそう`
 }

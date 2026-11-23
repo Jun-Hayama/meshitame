@@ -34,6 +34,11 @@ function getPace(userId: string): Promise<ReducePace> {
   return p
 }
 
+// 画面の外（フレンドの書き出しなど）で使う。失敗したら初期値（ゆっくり）
+export async function fetchReducePace(userId: string): Promise<ReducePace> {
+  return getPace(userId).catch(() => DEFAULT_REDUCE_PACE)
+}
+
 export async function saveReducePace(userId: string, pace: ReducePace): Promise<void> {
   // 初回設定の前でも保存できるように upsert（user_profiles の主キーは id）
   const { error } = await supabase.from('user_profiles').upsert({ id: userId, reduce_pace: pace }, { onConflict: 'id' })

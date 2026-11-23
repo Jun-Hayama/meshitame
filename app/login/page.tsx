@@ -3,6 +3,15 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { INVITE_RETURN_QUERY, clearPendingJoinToken, joinPath, readPendingJoinToken } from '@/lib/friends'
+
+// ログインのあとの行き先：誘いのリンクから来ていれば参加のページ（/friends/join/ で始まるパスだけ）、それ以外はホーム
+function afterLoginPath(): string {
+  const token = readPendingJoinToken()
+  const path = token ? joinPath(token) : null
+  if (path) clearPendingJoinToken()
+  return path ?? '/'
+}
 
 type Mode = 'login' | 'signup' | 'forgot'
 
@@ -20,7 +29,7 @@ export default function LoginPage() {
     // ログイン済みならホームへ（目標が未設定なら、ホームが /setup に案内する）
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { setCheckingSession(false); return }
-      router.replace('/')
+      router.replace(afterLoginPath())
     })
   }, [router])
 
@@ -52,7 +61,13 @@ export default function LoginPage() {
     }
 
     if (mode === 'signup') {
-      const { data, error: authError } = await supabase.auth.signUp({ email, password })
+      // 誘いのリンクから来たときは、確認メールの戻り先に印をつける（別のブラウザで開いたときに一言出すため）
+      const fromInvite = readPendingJoinToken() !== null
+      const { data, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: fromInvite ? { emailRedirectTo: `${window.location.origin}/?${INVITE_RETURN_QUERY}` } : undefined,
+      })
       setLoading(false)
       if (authError) {
         setIsError(true)
@@ -78,7 +93,7 @@ export default function LoginPage() {
       return
     }
 
-    router.replace('/')
+    router.replace(afterLoginPath())
   }
 
   if (checkingSession) {
