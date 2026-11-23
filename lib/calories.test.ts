@@ -93,7 +93,9 @@ import {
   describeDayExercises,
   describeShortLabel,
   getCheatLoadFrom,
-  describeSpareLine,
+  describeCardClearedLine,
+  CHEAT_ALL_CLEARED_LINE,
+  CHEAT_BAR_EXACT_LINE,
   describePlannedLine,
   describeMeshitameToast,
   describeExerciseToast,
@@ -1480,7 +1482,6 @@ describe('◯月のチート（16章 v2.6）', () => {
       expect(s.spareKcal).toBe(460)
       expect(s.pendingKcal).toBe(0)
       expect(s.tamemeshiNeeded).toBe(0)
-      expect(describeSpareLine(s)).toBe('チートにあと 460kcal 使えます')
     })
 
     it('食事のチートがある食事のメシためは貯めた分に入れない', () => {
@@ -1728,6 +1729,37 @@ describe('◯月のチート（16章 v2.6）', () => {
       it('まだの分0：出さない', () => {
         expect(describeCardWayLine(0)).toBeNull()
       })
+
+      it('貯めた分がチートより多い：「ぜんぶ、なかったことに。」（16-追記 v2.6.4）', () => {
+        const s = status({ wants: [extra('2026-11-02', 200)], mealLogs: lights('2026-11-03', 3) })
+        expect(s.spareKcal).toBe(250)
+        expect(describeCardClearedLine(s)).toBe('ぜんぶ、なかったことに。')
+        expect(CHEAT_ALL_CLEARED_LINE).toBe('ぜんぶ、なかったことに。')
+        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+        expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('over') // 縦線とその先の淡い部分は残す
+      })
+
+      it('ちょうど同じ：棒の下の「ぴったり、なかったことに。」だけで、「ぜんぶ、なかったことに。」は出さない', () => {
+        const s = status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 2) })
+        expect(s.eatenKcal).toBe(300)
+        expect(s.savedKcal).toBe(300)
+        expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('exact')
+        expect(CHEAT_BAR_EXACT_LINE).toBe('ぴったり、なかったことに。')
+        expect(describeCardClearedLine(s)).toBeNull()
+        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+      })
+
+      it('チート0で貯めた分だけ：一番下の行は出さない', () => {
+        const s = status({ mealLogs: lights('2026-11-03', 2) })
+        expect(s.eatenKcal).toBe(0)
+        expect(describeCardClearedLine(s)).toBeNull()
+        expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+      })
+
+      it('まだの分があるとき：「ぜんぶ、なかったことに。」は出さない', () => {
+        const s = status({ wants: [extra('2026-11-02', 400)], mealLogs: lights('2026-11-03', 1) })
+        expect(describeCardClearedLine(s)).toBeNull()
+      })
     })
 
     describe('記録のトースト（16-追記 v2.6.3）', () => {
@@ -1753,11 +1785,14 @@ describe('◯月のチート（16章 v2.6）', () => {
         expect(describeRecordToast(walk30, before, afterWalk)).toBe('ビール×2、なかったことに。')
       })
 
-      it('余りがある：「チートにあと◯kcal使えます」（カンマつき）', () => {
+      it('今月のチートがぜんぶなかったことになっている：「今月のチートは、ぜんぶなかったことに。」（16-追記 v2.6.4）', () => {
         const wants = [extra('2026-11-02', 140)]
         const before = status({ wants, mealLogs: lights('2026-11-03', 7) })
         const after = status({ wants, mealLogs: lights('2026-11-03', 8) }) // 1,200 − 140
-        expect(describeRecordToast(meshitame, before, after)).toBe('🐷 メシため。チートにあと1,060kcal使えます')
+        expect(describeRecordToast(meshitame, before, after)).toBe('🐷 メシため。今月のチートは、ぜんぶなかったことに。')
+        const afterWalk = status({ wants, mealLogs: lights('2026-11-03', 7), exerciseLogs: [walk30Log] })
+        expect(describeRecordToast(walk30, before, afterWalk)).toBe('🏃 うごため 30分。今月のチートは、ぜんぶなかったことに。')
+        expect(describeRecordToast(meshitame, before, after)).not.toContain('使え')
       })
 
       it('今月のチートも予定もない：換算のまま', () => {
@@ -1900,7 +1935,7 @@ describe('◯月のチート（16章 v2.6）', () => {
     expect(describeExerciseToast({ exercise_type: 'walking', minutes: 10, steps: null, points: 50 })).toBe('🏃 うごため 10分。')
   })
 
-  describe('いつものうごため（16-追記 v2.6.3）', () => {
+  describe('いつものうごため（16-追記 v2.6.4）', () => {
     const ex = (
       log_date: string,
       exercise_type: ExerciseLogRow['exercise_type'],
@@ -1909,23 +1944,48 @@ describe('◯月のチート（16章 v2.6）', () => {
     ) => ({ log_date, exercise_type, minutes, created_at })
     const today = '2026-11-20'
 
-    it('種類×時間ごとの回数の多い順に2つ', () => {
+    it('種類ごとに数え、回数の多い種類から2つ', () => {
       const logs = [
         ex('2026-11-10', 'running', 20),
-        ex('2026-11-11', 'running', 20),
+        ex('2026-11-11', 'running', 30), // 時間が違っても同じ種類として数える
+        ex('2026-11-12', 'running', 20),
         ex('2026-11-12', 'weights', 45),
         ex('2026-11-13', 'weights', 45),
-        ex('2026-11-14', 'weights', 45),
         ex('2026-11-15', 'walking', 30),
-        ex('2026-11-16', 'running', 30), // 時間が違うと別のもの
       ]
       expect(pickFrequentExercises(logs, today)).toEqual([
-        { type: 'weights', minutes: 45 },
         { type: 'running', minutes: 20 },
+        { type: 'weights', minutes: 45 },
       ])
     })
 
-    it('同じ回数なら、最後に記録した日が新しいほうが先', () => {
+    it('同じ種類は1つだけ（いちばん多い組み合わせが同じ種類で2つあっても）', () => {
+      const logs = [
+        ex('2026-11-10', 'walking', 30),
+        ex('2026-11-11', 'walking', 30),
+        ex('2026-11-12', 'walking', 45),
+        ex('2026-11-13', 'walking', 45),
+        ex('2026-11-14', 'cycling', 40),
+      ]
+      const picked = pickFrequentExercises(logs, today)
+      expect(picked.map((p) => p.type)).toEqual(['walking', 'cycling'])
+    })
+
+    it('分数はその種類でいちばん多く記録した分数。同じ回数なら新しいほう', () => {
+      const logs = [
+        ex('2026-11-10', 'walking', 30),
+        ex('2026-11-11', 'walking', 45),
+        ex('2026-11-12', 'walking', 45),
+        ex('2026-11-13', 'running', 20),
+        ex('2026-11-16', 'running', 30), // 20分と30分が1回ずつ → 新しい30分
+      ]
+      expect(pickFrequentExercises(logs, today)).toEqual([
+        { type: 'walking', minutes: 45 },
+        { type: 'running', minutes: 30 },
+      ])
+    })
+
+    it('同じ回数の種類なら、最後に記録した日が新しいほうが先', () => {
       const logs = [
         ex('2026-11-10', 'cycling', 40),
         ex('2026-11-18', 'running', 20),
@@ -1960,13 +2020,14 @@ describe('◯月のチート（16章 v2.6）', () => {
       ])
     })
 
-    it('足りないときの埋め方は、同じものを重ねない', () => {
-      expect(pickFrequentExercises([ex('2026-11-15', 'walking', 30)], today)).toEqual([
-        { type: 'walking', minutes: 30 },
+    it('足りないときの埋め方：すでに出ている種類は飛ばす', () => {
+      // ウォーキング45分があるので、ウォーキング30分は足さない
+      expect(pickFrequentExercises([ex('2026-11-15', 'walking', 45)], today)).toEqual([
+        { type: 'walking', minutes: 45 },
         { type: 'running', minutes: 30 },
       ])
-      expect(pickFrequentExercises([ex('2026-11-15', 'running', 30)], today)).toEqual([
-        { type: 'running', minutes: 30 },
+      expect(pickFrequentExercises([ex('2026-11-15', 'running', 20)], today)).toEqual([
+        { type: 'running', minutes: 20 },
         { type: 'walking', minutes: 30 },
       ])
     })

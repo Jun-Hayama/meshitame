@@ -1,6 +1,6 @@
 'use client'
 
-// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2・v2.6.3）。計算は lib/calories.ts の関数で済ませて出すだけ
+// 「◯月のチート」カード（docs/v2-spec.md 16章・16-追記 v2.6.2〜v2.6.4）。計算は lib/calories.ts の関数で済ませて出すだけ
 // 1本の棒（全体 = チートと貯めた分の大きいほう）。カード全体を押すとログ（/log）へ。中のボタンはボタンの動きを優先する
 
 import type { ReactNode } from 'react'
@@ -9,11 +9,11 @@ import {
   CHEAT_CARD_INTRO,
   buildCheatHints,
   calcCheatCardBar,
+  describeCardClearedLine,
   describeCardWayLine,
   describeCheatHeadline,
   describePlannedLine,
   describeShortLabel,
-  describeSpareLine,
   pickCheatEquivalent,
 } from '@/lib/calories'
 import { EXERCISE_EMOJI, MEAL_CHOICE_EMOJI, type CheatHints, type MonthCheatStatus } from '@/types'
@@ -49,8 +49,6 @@ export function MonthMeshitameCard({
   status,
   monthWeightDiffKg,
   onOpenLog,
-  onEatToday,
-  onPlan,
   onRecordWalk,
   onOpenHints,
 }: {
@@ -58,8 +56,6 @@ export function MonthMeshitameCard({
   status: MonthCheatStatus
   monthWeightDiffKg: number | null // 月初めからの体重の変化（13.4）。計算できないときは null
   onOpenLog: () => void
-  onEatToday: () => void // 今日の「追加チート」の追加画面
-  onPlan: () => void // チートのタブの追加画面
   onRecordWalk: (minutes: number) => void // うごための画面をウォーキング・その分数で開く
   onOpenHints: (hints: CheatHints) => void
 }) {
@@ -68,6 +64,7 @@ export function MonthMeshitameCard({
   const headline = describeCheatHeadline(pickCheatEquivalent(status), monthWeightDiffKg)
   const wayLine = describeCardWayLine(status.pendingKcal)
   const hints = buildCheatHints(status.pendingKcal)
+  const clearedLine = describeCardClearedLine(status)
   const { tamemeshiCount, exerciseCount } = status.earned
 
   return (
@@ -166,19 +163,8 @@ export function MonthMeshitameCard({
         </div>
       )}
 
-      {status.stage === 'spare' && (
-        <>
-          <p className="text-amber-400 text-sm font-bold">{describeSpareLine(status)}</p>
-          <div className="flex gap-2 mt-3">
-            <InnerButton onClick={onEatToday} className="flex-1 bg-amber-400 text-stone-950 font-bold text-xs py-2 rounded-xl">
-              今日食べる
-            </InnerButton>
-            <InnerButton onClick={onPlan} className="flex-1 bg-stone-800 text-amber-400 font-bold text-xs py-2 rounded-xl">
-              予定に入れる
-            </InnerButton>
-          </div>
-        </>
-      )}
+      {/* 貯めた分がチートより多い（16-追記 v2.6.4）：「ぜんぶ、なかったことに。」だけ。食べることはすすめない */}
+      {clearedLine && <p className="text-amber-400 text-sm font-bold">{clearedLine}</p>}
 
       {plan && (
         <p className={`text-xs mt-3 pt-3 border-t border-stone-800 ${plan.ready ? 'text-amber-400' : 'text-stone-400'}`}>

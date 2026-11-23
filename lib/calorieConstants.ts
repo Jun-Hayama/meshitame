@@ -148,10 +148,10 @@ export const CHEAT_HINT_TIPS = [
 // 1タップで記録したうごための［取り消す］を出しておく時間（16-追記 v2.6.2）
 export const UNDO_TOAST_MS = 5000
 
-// いつものうごため（16-追記 v2.6.3）：直近この日数のうごため（歩数は除く）を「種類×時間」でまとめ、回数の多い順にこの数まで
+// いつものうごため（16-追記 v2.6.4）：直近この日数のうごため（歩数は除く）を種類ごとに数え、回数の多い種類からこの数まで
 export const FREQUENT_EXERCISE_DAYS = 30
 export const FREQUENT_EXERCISE_MAX = 2
-// 足りないときに、この順で埋める（同じものは重ねない）
+// 足りないときに、この順で埋める（すでに出ている種類は飛ばす）
 export const FREQUENT_EXERCISE_DEFAULTS = [
   { type: 'walking', minutes: 30 },
   { type: 'running', minutes: 30 },
@@ -160,3 +160,7 @@ export const FREQUENT_EXERCISE_DEFAULTS = [
 // 活動量の選び方の下の一言（16-追記 v2.6.3）。活動係数は変えない
 export const ACTIVITY_LEVEL_NOTE =
   '通勤や家事などのふだんの動きは、ここに入っています。うごためには、意識して動いた分を記録します。'
+
+// 今日の記録の小見出しの右の一言（16-追記 v2.6.4）
+export const MESHITAME_SECTION_NOTE = `軽めにすると${TAMEMESHI_PT}kcal`
+export const EXERCISE_SECTION_NOTE = '意識して動いた分'

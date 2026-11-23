@@ -1120,8 +1120,13 @@ export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、�
 // カードでは使わない（16-追記 v2.6.2）。トースト（体重のトーストなど）でだけ使う
 export const CHEAT_CARD_ON_TRACK = '好きなものを食べながら、ちゃんと痩せてます'
 
-export function describeSpareLine(status: MonthCheatStatus): string {
-  return `チートにあと ${formatKcal(status.spareKcal)}kcal 使えます`
+// 貯めた分がチートを超えたときの一番下の行（16-追記 v2.6.4）。食べることはすすめない
+export const CHEAT_ALL_CLEARED_LINE = 'ぜんぶ、なかったことに。'
+
+// カードの一番下の「ぜんぶ、なかったことに。」：チートが1以上で、貯めた分がチートより多いときだけ
+// ちょうど同じときは棒の下の「ぴったり、なかったことに。」だけ、チート0のときは何も出さない
+export function describeCardClearedLine(status: Pick<MonthCheatStatus, 'eatenKcal' | 'spareKcal'>): string | null {
+  return status.eatenKcal > 0 && status.spareKcal > 0 ? CHEAT_ALL_CLEARED_LINE : null
 }
 
 // 「28日の焼肉は、もう準備OK」／「28日の焼肉まで、あと450kcal」
@@ -1159,7 +1164,7 @@ function describeExerciseAmount(log: Pick<ExerciseLogRow, 'exercise_type' | 'min
 // 2. まだの分が残る → 「🐷 メシため。あと15kcalです」
 // 3. 今月のチートも予定もない → 「🐷 メシため。ビール1本ぶんです」
 // 4. 今月のチートはなく、今日より後に予定がある → 「🐷 メシため。28日の焼肉まで、あと300kcalです」／「…は、もう準備OKです」
-// 5. それ以外 → 「🐷 メシため。チートにあと310kcal使えます」
+// 5. それ以外（今月のチートはぜんぶなかったことになっている）→ 「🐷 メシため。今月のチートは、ぜんぶなかったことに。」（16-追記 v2.6.4）
 export function describeRecordToast(record: RecordToastInput, before: MonthCheatStatus, after: MonthCheatStatus): string {
   const cleared = detectNewlyCleared(before, after)
   if (cleared) return `${getCheatName(cleared)}、なかったことに。`
@@ -1173,13 +1178,14 @@ export function describeRecordToast(record: RecordToastInput, before: MonthCheat
     if (plan) return `${head}。${describePlannedLine(plan)}です`
     return record.kind === 'meshitame' ? describeMeshitameToast() : describeExerciseToast(record.log)
   }
-  return `${head}。チートにあと${formatKcal(after.spareKcal)}kcal使えます`
+  return `${head}。今月のチートは、ぜんぶなかったことに。`
 }
 
-// --- 16-追記 v2.6.3 いつものうごため ---
+// --- 16-追記 v2.6.4 いつものうごため ---
 
-// 直近30日（今日を含む）のうごため（歩数は除く）を「種類×時間」でまとめ、回数の多い順に2つ
-// 回数が同じなら、最後に記録した日が新しいほうを先。足りないときは ウォーキング30分 → ランニング30分 で埋める（重ねない）
+// 直近30日（今日を含む）のうごため（歩数は除く）を種類ごとに数え、回数の多い種類から2つ（同じ種類は1つだけ）
+// 回数が同じなら、最後に記録した日が新しい種類を先。分数はその種類でいちばん多く記録した分数（同じ回数なら新しいほう）
+// 足りないときは ウォーキング30分 → ランニング30分 で埋める（すでに出ている種類は飛ばす）
 export function pickFrequentExercises(
   logs: Pick<ExerciseLogRow, 'log_date' | 'exercise_type' | 'minutes' | 'created_at'>[],
   today: string,
@@ -1187,25 +1193,37 @@ export function pickFrequentExercises(
   limit = FREQUENT_EXERCISE_MAX
 ): QuickExercise[] {
   const from = addDaysToDateStr(today, -(days - 1))
-  const groups = new Map<string, { exercise: QuickExercise; count: number; last: string }>()
+  type Tally = { count: number; last: string }
+  const types = new Map<QuickExercise['type'], Tally & { minutes: Map<number, Tally> }>()
+  const bump = (t: Tally, at: string) => {
+    t.count += 1
+    if (at > t.last) t.last = at
+  }
   for (const l of logs) {
     if (l.exercise_type === 'steps' || !l.minutes || l.minutes <= 0) continue
     if (l.log_date < from || l.log_date > today) continue
-    const key = `${l.exercise_type}:${l.minutes}`
     const at = `${l.log_date} ${l.created_at ?? ''}`
-    const found = groups.get(key)
-    if (found) {
-      found.count += 1
-      if (at > found.last) found.last = at
-    } else groups.set(key, { exercise: { type: l.exercise_type, minutes: l.minutes }, count: 1, last: at })
+    let group = types.get(l.exercise_type)
+    if (!group) {
+      group = { count: 0, last: '', minutes: new Map() }
+      types.set(l.exercise_type, group)
+    }
+    bump(group, at)
+    let m = group.minutes.get(l.minutes)
+    if (!m) {
+      m = { count: 0, last: '' }
+      group.minutes.set(l.minutes, m)
+    }
+    bump(m, at)
   }
-  const picked = [...groups.values()]
-    .sort((a, b) => b.count - a.count || b.last.localeCompare(a.last))
+  const byCountThenRecent = (a: Tally, b: Tally) => b.count - a.count || b.last.localeCompare(a.last)
+  const picked: QuickExercise[] = [...types.entries()]
+    .sort(([, a], [, b]) => byCountThenRecent(a, b))
     .slice(0, limit)
-    .map((g) => g.exercise)
+    .map(([type, g]) => ({ type, minutes: [...g.minutes.entries()].sort(([, a], [, b]) => byCountThenRecent(a, b))[0][0] }))
   for (const d of FREQUENT_EXERCISE_DEFAULTS) {
     if (picked.length >= limit) break
-    if (!picked.some((p) => p.type === d.type && p.minutes === d.minutes)) picked.push({ type: d.type, minutes: d.minutes })
+    if (!picked.some((p) => p.type === d.type)) picked.push({ type: d.type, minutes: d.minutes })
   }
   return picked
 }

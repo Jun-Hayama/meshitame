@@ -49,6 +49,7 @@ import {
   WEIGHT_REASSURE_TOAST_MS,
   WEIGHT_RISING_WEEKS,
   UNDO_TOAST_MS,
+  MESHITAME_SECTION_NOTE,
 } from '@/lib/calorieConstants'
 import { MealExamplesSheet } from '@/components/MealExamplesSheet'
 import { CheatItemPicker, type CheatPickerTarget } from '@/components/CheatItemPicker'
@@ -519,11 +520,6 @@ export default function Home() {
             status={status}
             monthWeightDiffKg={monthWeightDiffKg}
             onOpenLog={() => router.push('/log')}
-            onEatToday={() => {
-              setViewDate(today)
-              openExtra(today)
-            }}
-            onPlan={() => router.push('/wants?add=1')}
             onRecordWalk={(minutes) => {
               setViewDate(today)
               setExerciseSheet({ initial: { type: 'walking', minutes } })
@@ -531,7 +527,7 @@ export default function Home() {
             onOpenHints={setHints}
           />
         </section>
-        {/* 今日の記録：ごはん（16章 3-1）とうごき（16-追記 v2.6.3） */}
+        {/* 今日の記録：メシため（16章 3-1）とうごため（16-追記 v2.6.3・v2.6.4） */}
         <section className="mb-8">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-stone-300">{isToday ? '今日の記録' : 'この日の記録'}</h2>
@@ -543,7 +539,12 @@ export default function Home() {
               目安
             </button>
           </div>
-          <h3 className="text-xs font-medium text-stone-500 mb-2">ごはん</h3>
+          <div className="flex items-baseline gap-2 mb-2">
+            <h3 className="text-xs font-medium text-stone-500">
+              {MEAL_CHOICE_EMOJI.light} {MEAL_CHOICE_LABELS.light}
+            </h3>
+            <p className="text-[11px] text-stone-600">{MESHITAME_SECTION_NOTE}</p>
+          </div>
           <div className="space-y-3">
             {SLOTS.map(({ slot, label }) => {
               const selected = choiceFor(slot)

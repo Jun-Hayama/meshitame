@@ -76,8 +76,6 @@ export default function WantsPage() {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
       setUserId(user.id)
-      // 今日のカードの「予定に入れる」から来たときは追加画面を開く
-      if (new URLSearchParams(window.location.search).get('add') === '1') setAddDate(today)
       load(user.id)
     })
   }, [router, today])

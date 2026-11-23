@@ -1,10 +1,10 @@
 'use client'
 
-// 今日の記録の「うごき」（16-追記 v2.6.3）。いつものうごため2つは押すとすぐ保存、［＋うごため］はうごための画面
-// どのうごためを出すかは pickFrequentExercises、保存は呼び出し側（今日の画面）で行う。kcal は calcExercisePoints から出す
+// 今日の記録の「うごため」（16-追記 v2.6.3・v2.6.4）。いつものうごため2つは押すとすぐ保存、［＋うごため］はうごための画面
+// どのうごためを出すかは pickFrequentExercises、保存は呼び出し側（今日の画面）で行う。ボタンに kcal は出さない（トーストで伝える）
 
-import { calcExercisePoints } from '@/lib/calories'
-import { EXERCISE_LABEL, EXERCISE_TYPE_EMOJI, type QuickExercise } from '@/types'
+import { EXERCISE_SECTION_NOTE } from '@/lib/calorieConstants'
+import { EXERCISE_EMOJI, EXERCISE_LABEL, EXERCISE_TYPE_EMOJI, EXERCISE_TYPE_LABELS, type QuickExercise } from '@/types'
 
 export function QuickExerciseRow({
   isToday,
@@ -25,7 +25,12 @@ export function QuickExerciseRow({
 
   return (
     <div>
-      <h3 className="text-xs font-medium text-stone-500 mb-2">うごき</h3>
+      <div className="flex items-baseline gap-2 mb-2">
+        <h3 className="text-xs font-medium text-stone-500">
+          {EXERCISE_EMOJI} {EXERCISE_LABEL}
+        </h3>
+        <p className="text-[11px] text-stone-600">{EXERCISE_SECTION_NOTE}</p>
+      </div>
       {summary && (
         <p className="text-stone-400 text-xs mb-2">
           {isToday ? '今日は' : 'この日は'} {summary}
@@ -34,16 +39,13 @@ export function QuickExerciseRow({
       <div className="flex gap-2 overflow-x-auto">
         {exercises.map((ex) => (
           <button
-            key={`${ex.type}:${ex.minutes}`}
+            key={ex.type}
             type="button"
             disabled={saving}
             onClick={() => onQuick(ex)}
             className={chip}
           >
-            {EXERCISE_TYPE_EMOJI[ex.type]} {ex.minutes}分{' '}
-            <span className="text-stone-400 font-normal">
-              {calcExercisePoints({ type: ex.type, minutes: ex.minutes }).toLocaleString('ja-JP')}kcal
-            </span>
+            {EXERCISE_TYPE_EMOJI[ex.type]} {EXERCISE_TYPE_LABELS[ex.type]} {ex.minutes}分
           </button>
         ))}
         <button type="button" onClick={onMore} className={chip}>
