@@ -377,6 +377,7 @@ export interface CheatEvent {
   costPt: number
   emoji: string
   name: string
+  waterHeavy: boolean // むくみやすいチート（17章）
 }
 
 // 棒1本（今月は1日、はじめてからは1週）
@@ -465,8 +466,6 @@ export interface MonthlyTargetRow {
 
 // ===== フェーズ2 進捗チャート（11-4） =====
 
-export type ChartPeriod = '1m' | '3m' | 'all'
-
 export interface WeightChartPoint {
   date: string // YYYY-MM-DD
   kg: number
@@ -477,18 +476,6 @@ export interface TargetLinePoint extends WeightChartPoint {
   gateIndex: number | null // 開始点は null
 }
 
-export interface WeightChartData {
-  from: string
-  to: string
-  days: number // from〜to の日数（両端を含む）
-  dailyPoints: WeightChartPoint[] // 毎日の体重
-  averageSegments: WeightChartPoint[][] // 7日平均の線（7日間に記録が無い日で途切れる）
-  targetLine: WeightChartPoint[] // 範囲内の目標ライン（両端は補間した値）
-  gateMarkers: { date: string; gateIndex: number }[] // 範囲内のゲートの区切り
-  yMin: number
-  yMax: number
-}
-
 // ===== フェーズ2 ゲート達成（11-5） =====
 
 export type MilestoneKind = `gate${number}` | 'loss3' | 'loss5'
@@ -497,4 +484,19 @@ export interface Milestone {
   kind: MilestoneKind
   title: string // 「3ヶ月目の目標体重に届きました」「開始から3%減」
   message: string
+}
+
+// ===== v2.7 戻り予報（17章） =====
+
+// 直近のまとまり（むくみやすい日が続いたところ）と、そこから決まる日付・基準
+export interface WaterRetention {
+  date: string // 見ている日（保存した記録の日・今日）
+  firstDate: string // まとまりの最初の日
+  lastDate: string // まとまりの最後の日
+  days: number // まとまりの日数
+  dayNumber: number // 見ている日が何日目か（最後の日の翌日が1日目。最後の日は0）
+  returnDate: string // 戻りそうな日（最後の日の3日後）
+  inReturnPeriod: boolean // 1〜3日目
+  baselineKg: number | null // 最初の日の前日までの7日平均（記録3件未満は null）
+  afterLogs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[] // チート後の記録（最初の日の翌日以降・見ている日まで。日付順）
 }

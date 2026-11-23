@@ -20,9 +20,7 @@ import {
   MonthTargets,
   MonthTargetBasis,
   MonthlyTargetRow,
-  ChartPeriod,
   TargetLinePoint,
-  WeightChartData,
   WeightChartPoint,
   Milestone,
   MilestoneKind,
@@ -52,6 +50,7 @@ import {
   QuickExercise,
   RecordToastInput,
   CheatHints,
+  WaterRetention,
 } from '@/types'
 import {
   WANT_KIND_EMOJI,
@@ -86,8 +85,6 @@ import {
   WEIGHT_INPUT_MAX_KG,
   WEIGHT_AVG_DAYS,
   WEIGHT_AVG_MIN_COUNT,
-  CHART_PERIOD_DAYS,
-  CHART_Y_PADDING_KG,
   HEALTH_MILESTONES,
   WEIGHT_REASSURE_DIFF_KG,
   WEIGHT_RISING_WEEKS,
@@ -105,6 +102,10 @@ import {
   FREQUENT_EXERCISE_DAYS,
   FREQUENT_EXERCISE_MAX,
   FREQUENT_EXERCISE_DEFAULTS,
+  WATER_RETURN_DAYS,
+  WATER_TOAST_MAX_DAY,
+  WATER_UP_KG,
+  WATER_BACK_KG,
 } from '@/lib/calorieConstants'
 import { CHEAT_GENRE_MAP, CHEAT_ITEMS, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
@@ -1390,6 +1391,7 @@ export function buildCheatEvents(input: {
     costPt: c.costKcal,
     emoji: getCheatEmoji(c),
     name: getCheatName(c),
+    waterHeavy: c.kind === 'hearty' || (c.row !== null && isWaterHeavyRow(c.row)),
   }))
 }
 
@@ -1717,68 +1719,6 @@ export function calcTargetGap(
   return { targetKg, diffKg, ahead: diffKg <= 0 }
 }
 
-// 表示する範囲。1ヶ月・3ヶ月は今日までの直近（開始直後は開始日から）。全期間は開始日〜計画の終わり
-export function getChartRange(
-  period: ChartPeriod,
-  today: string,
-  plan: Pick<GoalPlanRow, 'start_date' | 'period_months'>
-): { from: string; to: string } {
-  if (period === 'all') {
-    const end = getPlanMonthEndDate(plan.start_date, plan.period_months)
-    return { from: plan.start_date, to: today > end ? today : end }
-  }
-  const days = CHART_PERIOD_DAYS[period]
-  const recent = addDaysToDateStr(today, -(days - 1))
-  const from = recent > plan.start_date ? recent : plan.start_date
-  return { from, to: addDaysToDateStr(from, days - 1) > today ? addDaysToDateStr(from, days - 1) : today }
-}
-
-export function buildWeightChartData(
-  logs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[],
-  plan: Pick<GoalPlanRow, 'start_date' | 'start_weight_kg' | 'gates' | 'period_months'>,
-  period: ChartPeriod,
-  today: string
-): WeightChartData {
-  const { from, to } = getChartRange(period, today, plan)
-  const days = daysBetween(from, to) + 1
-
-  const dailyPoints = logs
-    .filter((l) => l.measured_at >= from && l.measured_at <= to)
-    .map((l) => ({ date: l.measured_at, kg: Number(l.weight_kg) }))
-    .sort((a, b) => a.date.localeCompare(b.date))
-
-  // 7日平均は今日まで。7日間に記録が無い日で線を切る
-  const averageSegments: WeightChartPoint[][] = []
-  let segment: WeightChartPoint[] = []
-  const avgTo = to < today ? to : today
-  for (let d = from; d <= avgTo; d = addDaysToDateStr(d, 1)) {
-    const { avgKg } = calcWeightAverage(logs, d)
-    if (avgKg === null) {
-      if (segment.length) averageSegments.push(segment)
-      segment = []
-    } else {
-      segment.push({ date: d, kg: avgKg })
-    }
-  }
-  if (segment.length) averageSegments.push(segment)
-
-  const fullLine = buildTargetLine(plan)
-  const targetLine: WeightChartPoint[] = [
-    { date: from, kg: getTargetWeightOn(fullLine, from) },
-    ...fullLine.filter((p) => p.date > from && p.date < to).map(({ date, kg }) => ({ date, kg })),
-    { date: to, kg: getTargetWeightOn(fullLine, to) },
-  ]
-  const gateMarkers = fullLine
-    .filter((p): p is TargetLinePoint & { gateIndex: number } => p.gateIndex !== null && p.date >= from && p.date <= to)
-    .map((p) => ({ date: p.date, gateIndex: p.gateIndex }))
-
-  const values = [...dailyPoints, ...averageSegments.flat(), ...targetLine].map((p) => p.kg)
-  const yMin = Math.floor((Math.min(...values) - CHART_Y_PADDING_KG) * 2) / 2
-  const yMax = Math.ceil((Math.max(...values) + CHART_Y_PADDING_KG) * 2) / 2
-
-  return { from, to, days, dailyPoints, averageSegments, targetLine, gateMarkers, yMin, yMax }
-}
-
 // --- 11-5. ゲート達成・3%・5% ---
 
 // 7日平均で、まだ出していない達成を返す（参考値＝記録3件未満のときは出さない）
@@ -1805,4 +1745,157 @@ export function detectNewMilestones(
     }
   }
   return found
+}
+
+// --- 17. v2.7 戻り予報 ---
+// チートのあとに増える1〜2kgは、ほとんどが糖質と塩分にともなう水分。「いつごろ戻るか」を日付で見せる
+// 判定はアイテム表の印（lib/foodItems.ts の waterHeavy）と決まったルールだけ。保存した記録から毎回計算する
+
+type MealLogLike = { log_date: string; slot: MealSlot; choice: MealChoice }
+type WaterItem = { key: string; name: string }
+type WaterSources = { items: WaterItem[]; hearty: boolean }
+
+// 品がむくみやすいか。辞書にない品（自由入力）は中身がわからないので、むくみやすいとして扱う
+function isWaterHeavyItem(item: Pick<CheatItemSelection, 'genre' | 'name'>): boolean {
+  const food = CHEAT_ITEM_FOOD.get(`${item.genre}:${item.name}`)
+  return food ? FOOD_ITEM_MAP[food.foodId].waterHeavy === true : true
+}
+
+// チートの行のむくみやすい品。名前は辞書の名前から（…）を外したもの（自由入力は入れた名前）
+// 品が入っていない古い行は中身がわからないので、行そのものを1つの品として扱う
+function waterHeavyItemsOfRow(row: Pick<MonthlyWantRow, 'id' | 'items' | 'kind' | 'label'>): WaterItem[] {
+  if (!row.items?.length) return [{ key: `row:${row.id}`, name: row.label || WANT_KIND_LABELS[row.kind] }]
+  return row.items.filter(isWaterHeavyItem).map((i) => {
+    const key = `${i.genre}:${i.name}`
+    const food = CHEAT_ITEM_FOOD.get(key)
+    return { key, name: food ? shortFoodName(FOOD_ITEM_MAP[food.foodId].name) : i.name }
+  })
+}
+
+// 印つきの品を1つ以上含むチートの行か（食事のチートでも追加チートでも）
+export function isWaterHeavyRow(row: Pick<MonthlyWantRow, 'id' | 'items' | 'kind' | 'label'>): boolean {
+  return waterHeavyItemsOfRow(row).length > 0
+}
+
+// 日ごとの、その日をむくみやすい日にしたもの（印つきの品・自由入力の品・品なしの🔥チート）。until の日まで
+// 品つきのチートがある食事の hearty は品なしとして扱わない。予定のチートはその日が来るまで数えない（until を今日までにする）
+function listWaterSourcesByDay(input: { wants: MonthlyWantRow[]; mealLogs: MealLogLike[]; until: string }): Map<string, WaterSources> {
+  const { wants, mealLogs, until } = input
+  const byDay = new Map<string, WaterSources>()
+  const at = (date: string) => {
+    if (!byDay.has(date)) byDay.set(date, { items: [], hearty: false })
+    return byDay.get(date) as WaterSources
+  }
+  for (const r of wants) {
+    if (!isDatedCheat(r) || (r.scheduled_date as string) > until) continue
+    const items = waterHeavyItemsOfRow(r)
+    if (items.length > 0) at(r.scheduled_date as string).items.push(...items)
+  }
+  for (const h of expandHeartyCheats(mealLogs, '0000-01-01', until, getReplacedMealKeys(wants))) at(h.date).hearty = true
+  return byDay
+}
+
+// むくみやすい日（日付順）。until（ふつうは今日）より後は数えない
+export function listWaterHeavyDays(input: { wants: MonthlyWantRow[]; mealLogs: MealLogLike[]; until: string }): string[] {
+  return [...listWaterSourcesByDay(input).keys()].sort()
+}
+
+// 直近のまとまり・何日目・戻りそうな日・基準（v2.8 のフレンドでも使う）
+// まとまり = 見ている日（date）までで、いちばん新しいむくみやすい日から、あいだを空けずに続いている日
+// 基準 = まとまりの最初の日の前日までの7日平均（記録3件未満は null）。前のチートの水分を入れないため
+// チート後の記録 = まとまりの最初の日の翌日以降（最初の日の朝は食べる前の体重なので使わない）〜見ている日
+// むくみやすい日がなければ null
+export function calcWaterRetention(input: {
+  wants: MonthlyWantRow[]
+  mealLogs: MealLogLike[]
+  weightLogs: Pick<WeightLog, 'measured_at' | 'weight_kg'>[]
+  date: string
+  today: string
+}): WaterRetention | null {
+  const { wants, mealLogs, weightLogs, date, today } = input
+  const days = new Set(listWaterHeavyDays({ wants, mealLogs, until: date < today ? date : today }))
+  if (days.size === 0) return null
+  const lastDate = [...days].sort().at(-1) as string
+  let firstDate = lastDate
+  while (days.has(addDaysToDateStr(firstDate, -1))) firstDate = addDaysToDateStr(firstDate, -1)
+  const dayNumber = daysBetween(lastDate, date)
+  const base = calcWeightAverage(weightLogs, addDaysToDateStr(firstDate, -1))
+  return {
+    date,
+    firstDate,
+    lastDate,
+    days: daysBetween(firstDate, lastDate) + 1,
+    dayNumber,
+    returnDate: addDaysToDateStr(lastDate, WATER_RETURN_DAYS),
+    inReturnPeriod: dayNumber >= 1 && dayNumber <= WATER_RETURN_DAYS,
+    baselineKg: base.avgKg === null || base.isReference ? null : base.avgKg,
+    afterLogs: weightLogs
+      .filter((l) => l.measured_at > firstDate && l.measured_at <= date)
+      .sort((a, b) => a.measured_at.localeCompare(b.measured_at)),
+  }
+}
+
+// 文中の日付：今日と同じ月なら「26日」、違う月なら「12月2日」
+export function formatDayInText(date: string, today: string): string {
+  const d = dayOf(date)
+  return date.slice(0, 7) === today.slice(0, 7) ? `${d}日` : `${Number(date.slice(5, 7))}月${d}日`
+}
+
+// 基準との差（小数の誤差を丸める）
+function diffFromBaseline(kg: number, baselineKg: number): number {
+  return Math.round((Number(kg) - baselineKg) * 1000) / 1000
+}
+
+// 今日の画面のカードの下（今日がむくみやすい日のとき）
+export function describeWaterTodayLine(today: string): string {
+  const back = formatDayInText(addDaysToDateStr(today, WATER_RETURN_DAYS), today)
+  return `明日は1〜2kg増えるかもしれません。水分なので、${back}ごろには戻りそうです。`
+}
+
+// 体重を保存した直後のトースト（保存した日が1〜5日目のときだけ）。当てはまらなければ null（v2.5 のルールに戻す）
+// 1. 戻った：前回の記録（チート後の記録のうち今回より前で最後）が基準＋0.3kg以上で、今回が基準＋0.2kg以下
+// 2. 増えている（1〜3日目）：今回が基準＋0.3kg以上 → 続いている（2日以上・順調）／順調／順調でない（あと◯kcal）
+export function describeWaterReturnToast(input: {
+  retention: WaterRetention | null
+  weightKg: number
+  onTrack: boolean
+  pendingKcal: number
+  today: string
+}): string | null {
+  const { retention: r, weightKg, onTrack, pendingKcal, today } = input
+  if (!r || r.baselineKg === null) return null
+  if (r.dayNumber < 1 || r.dayNumber > WATER_TOAST_MAX_DAY) return null
+  const now = diffFromBaseline(weightKg, r.baselineKg)
+  const prev = r.afterLogs.filter((l) => l.measured_at < r.date).at(-1)
+  if (prev && diffFromBaseline(prev.weight_kg, r.baselineKg) >= WATER_UP_KG && now <= WATER_BACK_KG) {
+    return 'もとに戻りました。メシためはちゃんと効いてます。'
+  }
+  if (r.dayNumber > WATER_RETURN_DAYS || now < WATER_UP_KG) return null
+  const back = formatDayInText(r.returnDate, today)
+  if (onTrack && r.days >= 2) return `水分が続いているだけです。${back}ごろには戻りそうです。`
+  if (onTrack) return `増えたのは水分です。${back}ごろには戻りそう。${CHEAT_CARD_ON_TRACK}。`
+  return `増えたのは水分です。${back}ごろには戻りそう。あと${formatKcal(pendingKcal)}kcalで、なかったことにできます。`
+}
+
+// 体重タブの行のチート名：まとまりの最後の日をむくみやすい日にしたもの。品が1つならその名前、それ以外は「チート」
+export function getWaterCheatName(input: { wants: MonthlyWantRow[]; mealLogs: MealLogLike[]; date: string }): string {
+  const sources = listWaterSourcesByDay({ ...input, until: input.date }).get(input.date)
+  const items = new Map((sources?.items ?? []).map((i) => [i.key, i.name]))
+  return items.size === 1 && !sources?.hearty ? [...items.values()][0] : 'チート'
+}
+
+// 体重タブの記録カードの下：「ラーメンから2日目。26日ごろには戻りそうです。」
+// 戻り期間中で、最新のチート後の記録が基準＋0.3kg以上のときだけ。それ以外は null
+export function describeWaterReturnLine(input: {
+  retention: WaterRetention | null
+  wants: MonthlyWantRow[]
+  mealLogs: MealLogLike[]
+  today: string
+}): string | null {
+  const { retention: r, wants, mealLogs, today } = input
+  if (!r || !r.inReturnPeriod || r.baselineKg === null) return null
+  const latest = r.afterLogs.at(-1)
+  if (!latest || diffFromBaseline(latest.weight_kg, r.baselineKg) < WATER_UP_KG) return null
+  const name = getWaterCheatName({ wants, mealLogs, date: r.lastDate })
+  return `${name}から${r.dayNumber}日目。${formatDayInText(r.returnDate, today)}ごろには戻りそうです。`
 }

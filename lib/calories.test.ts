@@ -55,8 +55,6 @@ import {
   buildTargetLine,
   getTargetWeightOn,
   calcTargetGap,
-  getChartRange,
-  buildWeightChartData,
   detectNewMilestones,
   calcMealExampleKcal,
   buildMealExampleBreakdown,
@@ -101,6 +99,14 @@ import {
   describeCardWayLine,
   pickFrequentExercises,
   pickFrequentCheatItems,
+  isWaterHeavyRow,
+  listWaterHeavyDays,
+  calcWaterRetention,
+  formatDayInText,
+  describeWaterTodayLine,
+  describeWaterReturnToast,
+  describeWaterReturnLine,
+  getWaterCheatName,
 } from '@/lib/calories'
 import type { ExerciseLogRow, MealLogRow, MonthlyWantRow, WantEntry } from '@/types'
 import { CHEAT_ITEMS } from '@/lib/cheatItems'
@@ -875,40 +881,6 @@ describe('進捗チャート（11-4）', () => {
     expect(ahead.ahead).toBe(false)
     expect(calcTargetGap(101, line, '2026-12-20')!.ahead).toBe(true)
     expect(calcTargetGap(null, line, '2026-12-20')).toBeNull()
-  })
-
-  it('期間の切り替え：開始直後は開始日から、全期間は計画の終わりまで', () => {
-    expect(getChartRange('1m', '2026-11-10', plan)).toEqual({ from: '2026-11-08', to: '2026-12-07' })
-    expect(getChartRange('1m', '2027-03-01', plan)).toEqual({ from: '2027-01-31', to: '2027-03-01' })
-    expect(getChartRange('3m', '2027-03-01', plan).from).toBe('2026-12-02')
-    expect(getChartRange('all', '2027-03-01', plan)).toEqual({ from: '2026-11-08', to: '2027-10-31' })
-  })
-
-  it('7日平均の線は記録の無い7日間で途切れ、目標ラインは範囲の端で補間する', () => {
-    const logs = [
-      { measured_at: '2026-11-08', weight_kg: 104 },
-      { measured_at: '2026-11-09', weight_kg: 103.8 },
-      { measured_at: '2026-11-25', weight_kg: 102.6 },
-    ]
-    const data = buildWeightChartData(logs, plan, '1m', '2026-11-27')
-    expect(data.from).toBe('2026-11-08')
-    expect(data.days).toBe(30)
-    expect(data.dailyPoints).toHaveLength(3)
-    // 11/8〜11/15 が1本目（11/15 は 11/9 を含む）、11/25〜11/27 が2本目
-    expect(data.averageSegments).toHaveLength(2)
-    expect(data.averageSegments[0].at(-1)!.date).toBe('2026-11-15')
-    expect(data.averageSegments[1][0].date).toBe('2026-11-25')
-    expect(data.averageSegments[1].at(-1)!.date).toBe('2026-11-27') // 今日まで
-    expect(data.targetLine[0]).toEqual({ date: '2026-11-08', kg: 104 })
-    expect(data.targetLine.at(-1)!.kg).toBeCloseTo(getTargetWeightOn(buildTargetLine(plan), '2026-12-07'))
-    expect(data.gateMarkers).toEqual([])
-    expect(data.yMax).toBeGreaterThanOrEqual(104.5)
-  })
-
-  it('全期間はゲートの区切りを4つ持つ', () => {
-    const data = buildWeightChartData([], plan, 'all', '2026-11-10')
-    expect(data.gateMarkers.map((g) => g.gateIndex)).toEqual([1, 2, 3, 4])
-    expect(data.averageSegments).toEqual([])
   })
 })
 
@@ -2046,5 +2018,274 @@ describe('◯月のチート（16章 v2.6）', () => {
     const picked = pickFrequentCheatItems(rows, '2026-11-20')
     expect(picked.map((p) => p.name)).toEqual(['ハイボール', 'ビール', '晩酌', 'a', 'b', 'c'])
     expect(picked[0]).toEqual({ genre: 'alcohol', name: 'ハイボール', kcal: 100 })
+  })
+})
+
+describe('戻り予報（17章）', () => {
+  let seq = 0
+  const want = (over: Partial<MonthlyWantRow>): MonthlyWantRow => ({
+    id: `r${seq++}`,
+    user_id: 'u',
+    kind: 'other',
+    scheduled_date: null,
+    times_per_week: null,
+    label: null,
+    is_active: true,
+    created_at: `2026-11-01T00:00:${String(seq).padStart(2, '0')}Z`,
+    cheat_type: 'addon',
+    replace_slot: null,
+    items: null,
+    total_kcal: 500,
+    ...over,
+  })
+  const item = (name: string, qty = 1) => {
+    const c = CHEAT_ITEMS.find((i) => i.name === name)!
+    return { genre: c.genre as string, name: c.name, kcal: c.kcal, qty }
+  }
+  const custom = (name: string) => ({ genre: 'ramen' as const, name, kcal: 600, qty: 1 })
+  const extra = (date: string, items: ReturnType<typeof item>[]) => want({ scheduled_date: date, items })
+  const mealCheat = (date: string, slot: 'morning' | 'lunch' | 'dinner', items: ReturnType<typeof item>[]) =>
+    want({ scheduled_date: date, cheat_type: 'replace', replace_slot: slot, items })
+  const hearty = (log_date: string, slot: 'morning' | 'lunch' | 'dinner' = 'dinner') => ({
+    log_date,
+    slot,
+    choice: 'hearty' as const,
+  })
+  // from から1日ずつの体重（null の日は記録なし）
+  const weights = (from: string, kgs: (number | null)[]) =>
+    kgs.flatMap((kg, i) => (kg === null ? [] : [{ measured_at: addDaysToDateStr(from, i), weight_kg: kg }]))
+  const today = '2026-11-23'
+  // 11/13〜11/19 の7日間はずっと 70.0kg（基準 70.0）
+  const base = weights('2026-11-13', [70, 70, 70, 70, 70, 70, 70])
+
+  describe('むくみやすい日', () => {
+    it('印つきの品（ラーメン）ならむくみやすい、印なし（ハイボール）だけならむくみにくい', () => {
+      expect(isWaterHeavyRow(extra('2026-11-20', [item('醤油・塩')]))).toBe(true)
+      expect(isWaterHeavyRow(extra('2026-11-20', [item('ハイボール1杯', 3)]))).toBe(false)
+      expect(isWaterHeavyRow(extra('2026-11-20', [item('ハイボール1杯'), item('ビール500ml')]))).toBe(true)
+    })
+
+    it('自由入力の品は印つきとして扱う', () => {
+      expect(isWaterHeavyRow(extra('2026-11-20', [custom('近所の油そば')]))).toBe(true)
+    })
+
+    it('品なしの🔥チートはむくみやすい日', () => {
+      expect(listWaterHeavyDays({ wants: [], mealLogs: [hearty('2026-11-20')], until: today })).toEqual(['2026-11-20'])
+    })
+
+    it('品つきの🔥チートは品の印で決まる（その食事の hearty は品なしとして扱わない）', () => {
+      const light = [mealCheat('2026-11-20', 'dinner', [item('ハイボール1杯')])]
+      expect(listWaterHeavyDays({ wants: light, mealLogs: [hearty('2026-11-20')], until: today })).toEqual([])
+      const heavy = [mealCheat('2026-11-20', 'dinner', [item('家系')])]
+      expect(listWaterHeavyDays({ wants: heavy, mealLogs: [hearty('2026-11-20')], until: today })).toEqual(['2026-11-20'])
+    })
+
+    it('追加チートも数える', () => {
+      expect(listWaterHeavyDays({ wants: [extra('2026-11-21', [item('ショートケーキ')])], mealLogs: [], until: today })).toEqual([
+        '2026-11-21',
+      ])
+    })
+
+    it('予定のチートは、その日が来るまで数えない', () => {
+      const wants = [extra('2026-11-25', [item('醤油・塩')])]
+      expect(listWaterHeavyDays({ wants, mealLogs: [], until: today })).toEqual([])
+      expect(listWaterHeavyDays({ wants, mealLogs: [], until: '2026-11-25' })).toEqual(['2026-11-25'])
+      expect(calcWaterRetention({ wants, mealLogs: [], weightLogs: base, date: today, today })).toBeNull()
+    })
+
+    it('取り消したチート（is_active = false）は数えない', () => {
+      const wants = [{ ...extra('2026-11-20', [item('醤油・塩')]), is_active: false }]
+      expect(listWaterHeavyDays({ wants, mealLogs: [], until: today })).toEqual([])
+    })
+
+    it('チャートの絵文字用に、むくみやすいチートに印をつける', () => {
+      const events = buildCheatEvents({
+        wants: [extra('2026-11-20', [item('醤油・塩')]), extra('2026-11-21', [item('ハイボール1杯')])],
+        mealLogs: [hearty('2026-11-22')],
+        slotTargets: [],
+        from: '2026-11-01',
+        today,
+      })
+      expect(events.map((e) => [e.date, e.waterHeavy])).toEqual([
+        ['2026-11-20', true],
+        ['2026-11-21', false],
+        ['2026-11-22', true],
+      ])
+      expect(events[2].emoji).toBe('🔥')
+    })
+  })
+
+  describe('まとまり・基準・戻りそうな日', () => {
+    it('1日だけ：その日がまとまり。何日目は翌日から、戻りそうな日は3日後', () => {
+      const r = calcWaterRetention({ wants: [extra('2026-11-20', [item('醤油・塩')])], mealLogs: [], weightLogs: base, date: '2026-11-22', today })!
+      expect(r.firstDate).toBe('2026-11-20')
+      expect(r.lastDate).toBe('2026-11-20')
+      expect(r.days).toBe(1)
+      expect(r.dayNumber).toBe(2)
+      expect(r.returnDate).toBe('2026-11-23')
+      expect(r.baselineKg).toBeCloseTo(70)
+    })
+
+    it('連続した2日：基準は最初の日の前日まで、何日目は最後の日から', () => {
+      // 11/20 の記録（71.5）は最初の日の前日より後なので基準に入らない
+      const logs = [...weights('2026-11-13', [70, 70, 70, 70, 70, 70]), { measured_at: '2026-11-19', weight_kg: 70.6 }]
+      const wants = [extra('2026-11-19', [item('醤油・塩')]), extra('2026-11-20', [item('ビール500ml')])]
+      const r = calcWaterRetention({ wants, mealLogs: [], weightLogs: logs, date: '2026-11-21', today })!
+      expect(r.firstDate).toBe('2026-11-19')
+      expect(r.lastDate).toBe('2026-11-20')
+      expect(r.days).toBe(2)
+      expect(r.dayNumber).toBe(1)
+      expect(r.baselineKg).toBeCloseTo(70) // 11/12〜11/18 の記録（11/13〜11/18）
+      expect(r.returnDate).toBe('2026-11-23')
+    })
+
+    it('1日あいたら別のまとまり（直近のほうを使う）', () => {
+      const wants = [extra('2026-11-18', [item('醤油・塩')]), extra('2026-11-20', [item('醤油・塩')])]
+      const r = calcWaterRetention({ wants, mealLogs: [], weightLogs: base, date: '2026-11-21', today })!
+      expect(r.firstDate).toBe('2026-11-20')
+      expect(r.days).toBe(1)
+    })
+
+    it('記録が3件未満なら基準なし', () => {
+      const logs = weights('2026-11-17', [70, 70])
+      const r = calcWaterRetention({ wants: [extra('2026-11-20', [item('醤油・塩')])], mealLogs: [], weightLogs: logs, date: '2026-11-21', today })!
+      expect(r.baselineKg).toBeNull()
+      expect(describeWaterReturnToast({ retention: r, weightKg: 71.5, onTrack: true, pendingKcal: 0, today })).toBeNull()
+    })
+
+    it('チート後の記録は最初の日の翌日以降（金・土のまとまりなら土曜の朝は使い、金曜の朝は使わない）', () => {
+      // 11/20（金）・11/21（土）
+      const wants = [extra('2026-11-20', [item('醤油・塩')]), extra('2026-11-21', [item('ビール500ml')])]
+      const logs = [...base, { measured_at: '2026-11-20', weight_kg: 70.1 }, { measured_at: '2026-11-21', weight_kg: 71.2 }]
+      const r = calcWaterRetention({ wants, mealLogs: [], weightLogs: logs, date: '2026-11-22', today })!
+      expect(r.afterLogs.map((l) => l.measured_at)).toEqual(['2026-11-21'])
+    })
+
+    it('戻り期間の境目：3日目は期間内、4日目は期間外', () => {
+      const wants = [extra('2026-11-20', [item('醤油・塩')])]
+      const at = (date: string) => calcWaterRetention({ wants, mealLogs: [], weightLogs: base, date, today: date })!
+      expect(at('2026-11-23').inReturnPeriod).toBe(true)
+      expect(at('2026-11-24').inReturnPeriod).toBe(false)
+      expect(at('2026-11-20').inReturnPeriod).toBe(false) // 0日目
+    })
+
+    it('日付の書き方：同じ月は「26日」、月をまたぐときは「12月2日」', () => {
+      expect(formatDayInText('2026-11-26', today)).toBe('26日')
+      expect(formatDayInText('2026-12-02', '2026-11-29')).toBe('12月2日')
+      const r = calcWaterRetention({ wants: [extra('2026-11-29', [item('醤油・塩')])], mealLogs: [], weightLogs: [], date: '2026-11-30', today: '2026-11-30' })!
+      expect(r.returnDate).toBe('2026-12-02')
+      expect(describeWaterTodayLine('2026-11-29')).toBe('明日は1〜2kg増えるかもしれません。水分なので、12月2日ごろには戻りそうです。')
+      expect(describeWaterTodayLine('2026-11-20')).toBe('明日は1〜2kg増えるかもしれません。水分なので、23日ごろには戻りそうです。')
+    })
+  })
+
+  describe('体重を保存した直後のトースト', () => {
+    const ramenDay = [extra('2026-11-20', [item('醤油・塩')])]
+    const toast = (opts: {
+      wants?: MonthlyWantRow[]
+      logs: { measured_at: string; weight_kg: number }[]
+      date: string
+      kg: number
+      onTrack?: boolean
+      pendingKcal?: number
+    }) => {
+      const weightLogs = [...opts.logs.filter((l) => l.measured_at !== opts.date), { measured_at: opts.date, weight_kg: opts.kg }]
+      const retention = calcWaterRetention({ wants: opts.wants ?? ramenDay, mealLogs: [], weightLogs, date: opts.date, today })
+      return describeWaterReturnToast({
+        retention,
+        weightKg: opts.kg,
+        onTrack: opts.onTrack ?? true,
+        pendingKcal: opts.pendingKcal ?? 0,
+        today,
+      })
+    }
+
+    it('戻った：前回が基準＋0.3kg以上で、今回が基準＋0.2kg以下', () => {
+      const logs = [...base, { measured_at: '2026-11-21', weight_kg: 71.4 }]
+      expect(toast({ logs, date: '2026-11-22', kg: 70.2 })).toBe('もとに戻りました。メシためはちゃんと効いてます。')
+      // 4〜5日目でも戻ったら出す
+      expect(toast({ logs, date: '2026-11-25', kg: 70.1 })).toBe('もとに戻りました。メシためはちゃんと効いてます。')
+    })
+
+    it('増えている＋順調', () => {
+      expect(toast({ logs: base, date: '2026-11-21', kg: 71.2 })).toBe(
+        '増えたのは水分です。23日ごろには戻りそう。好きなものを食べながら、ちゃんと痩せてます。'
+      )
+    })
+
+    it('増えている＋まとまりが2日以上で順調 → 続いている', () => {
+      const wants = [extra('2026-11-19', [item('醤油・塩')]), extra('2026-11-20', [item('ビール500ml')])]
+      const logs = weights('2026-11-12', [70, 70, 70, 70, 70, 70, 70])
+      expect(toast({ wants, logs, date: '2026-11-21', kg: 71.0 })).toBe('水分が続いているだけです。23日ごろには戻りそうです。')
+    })
+
+    it('増えている＋順調でない → まだの分のkcal', () => {
+      expect(toast({ logs: base, date: '2026-11-21', kg: 71.2, onTrack: false, pendingKcal: 1350 })).toBe(
+        '増えたのは水分です。23日ごろには戻りそう。あと1,350kcalで、なかったことにできます。'
+      )
+    })
+
+    it('4〜5日目で戻っていないときは出さない', () => {
+      const logs = [...base, { measured_at: '2026-11-21', weight_kg: 71.4 }]
+      expect(toast({ logs, date: '2026-11-24', kg: 71.0 })).toBeNull()
+      expect(toast({ logs, date: '2026-11-25', kg: 71.0 })).toBeNull()
+    })
+
+    it('0日目（チートの日）と6日目は出さない', () => {
+      const logs = [...base, { measured_at: '2026-11-21', weight_kg: 71.4 }]
+      expect(toast({ logs, date: '2026-11-20', kg: 71.0 })).toBeNull()
+      expect(toast({ logs, date: '2026-11-26', kg: 70.0 })).toBeNull()
+    })
+
+    it('まとまりより前の記録は「前回の記録」に使わない', () => {
+      // 11/19 は 71.0 と高いが、まとまり（11/20）より前なので前回の記録にならない
+      const logs = [...weights('2026-11-12', [70, 70, 70, 70, 70, 70]), { measured_at: '2026-11-19', weight_kg: 71.0 }]
+      expect(toast({ logs, date: '2026-11-21', kg: 70.1 })).toBeNull()
+    })
+
+    it('まとまりの最初の日の朝の記録は「前回の記録」に使わない', () => {
+      // 11/20 の朝は食べる前。高くても前回の記録にしない
+      const logs = [...base, { measured_at: '2026-11-20', weight_kg: 71.0 }]
+      expect(toast({ logs, date: '2026-11-21', kg: 70.1 })).toBeNull()
+    })
+
+    it('基準との差が0.3kgに届かなければ出さない', () => {
+      expect(toast({ logs: base, date: '2026-11-21', kg: 70.2 })).toBeNull()
+    })
+  })
+
+  describe('体重タブの行', () => {
+    it('品が1つならその名前（辞書の名前から（…）を外す）', () => {
+      const wants = [mealCheat('2026-11-20', 'dinner', [item('醤油・塩')])]
+      expect(getWaterCheatName({ wants, mealLogs: [hearty('2026-11-20')], date: '2026-11-20' })).toBe('ラーメン')
+      expect(getWaterCheatName({ wants: [extra('2026-11-20', [custom('油そば')])], mealLogs: [], date: '2026-11-20' })).toBe('油そば')
+    })
+
+    it('品が2つ以上なら「チート」。むくみにくい品は数えない', () => {
+      const two = [extra('2026-11-20', [item('醤油・塩'), item('ビール500ml')])]
+      expect(getWaterCheatName({ wants: two, mealLogs: [], date: '2026-11-20' })).toBe('チート')
+      const withHighball = [extra('2026-11-20', [item('醤油・塩'), item('ハイボール1杯')])]
+      expect(getWaterCheatName({ wants: withHighball, mealLogs: [], date: '2026-11-20' })).toBe('ラーメン')
+    })
+
+    it('品なしの🔥チートだけなら「チート」', () => {
+      expect(getWaterCheatName({ wants: [], mealLogs: [hearty('2026-11-20')], date: '2026-11-20' })).toBe('チート')
+    })
+
+    it('戻り期間中で、最新のチート後の記録が基準＋0.3kg以上なら出す', () => {
+      const wants = [extra('2026-11-20', [item('醤油・塩')])]
+      const line = (logs: { measured_at: string; weight_kg: number }[], date: string) =>
+        describeWaterReturnLine({
+          retention: calcWaterRetention({ wants, mealLogs: [], weightLogs: logs, date, today: date }),
+          wants,
+          mealLogs: [],
+          today: date,
+        })
+      const up = [...base, { measured_at: '2026-11-22', weight_kg: 71.1 }]
+      expect(line(up, '2026-11-22')).toBe('ラーメンから2日目。23日ごろには戻りそうです。')
+      expect(line(up, '2026-11-24')).toBeNull() // 戻り期間を過ぎた
+      expect(line([...base, { measured_at: '2026-11-22', weight_kg: 70.1 }], '2026-11-22')).toBeNull()
+      expect(line(base, '2026-11-21')).toBeNull() // チート後の記録がない
+    })
   })
 })

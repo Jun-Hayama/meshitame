@@ -22,7 +22,8 @@ function shortDate(date: string) {
   return `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
 }
 
-export function WeightChart({ data }: { data: CheatWeightChartData }) {
+// returnDate：戻り期間中だけ渡す戻りそうな日（17章）。その日に細い縦線を引く
+export function WeightChart({ data, returnDate = null }: { data: CheatWeightChartData; returnDate?: string | null }) {
   const [selected, setSelected] = useState<number | null>(null)
   const n = Math.max(1, data.bars.length)
   const bw = PLOT_W / n
@@ -38,10 +39,25 @@ export function WeightChart({ data }: { data: CheatWeightChartData }) {
   const lastSegment = data.weightSegments[data.weightSegments.length - 1]
   const lastPoint = lastSegment?.[lastSegment.length - 1] ?? null
   const selectedBar = selected === null ? null : data.bars[selected]
+  const returnIndex = returnDate ? data.bars.findIndex((b) => b.from <= returnDate && returnDate <= b.to) : -1
 
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="食べたチートの累計と体重のチャート">
+        {/* 戻りそうな日の目印（17章） */}
+        {returnIndex >= 0 && (
+          <line
+            x1={cx(returnIndex)}
+            x2={cx(returnIndex)}
+            y1={PAD.top}
+            y2={PAD.top + PLOT_H}
+            stroke={STONE_300}
+            strokeWidth={1}
+            strokeDasharray="2 3"
+            opacity={0.35}
+          />
+        )}
+
         {/* 棒：その日（週）までに食べたチートの累計 */}
         {data.bars.map((b, i) => {
           if (b.cumulativeKcal === null) return null
@@ -69,7 +85,8 @@ export function WeightChart({ data }: { data: CheatWeightChartData }) {
                   onClick={() => setSelected((cur) => (cur === i ? null : i))}
                   style={{ cursor: 'pointer' }}
                 >
-                  {b.events[0].emoji}
+                  {/* むくみやすい日は、そのチートの絵文字を優先（17章） */}
+                  {(b.events.find((e) => e.waterHeavy) ?? b.events[0]).emoji}
                   {b.events.length > 1 && (
                     <tspan fontSize={7} fill={STONE_300}>
                       ×{b.events.length}

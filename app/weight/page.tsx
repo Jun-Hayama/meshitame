@@ -23,6 +23,9 @@ import {
   calcTargetGap,
   calcWeekOverWeek,
   calcWeightAverage,
+  calcWaterRetention,
+  describeWaterReturnLine,
+  describeWaterReturnToast,
   formatDateJST,
   describeMonthWeightChange,
   formatWeightChange,
@@ -32,7 +35,7 @@ import {
   isWeightRisingThreeWeeks,
   shouldShowWeightReassurance,
 } from '@/lib/calories'
-import { WEIGHT_REASSURE_MESSAGE, WEIGHT_REASSURE_TOAST_MS } from '@/lib/calorieConstants'
+import { WATER_TOAST_MS, WEIGHT_REASSURE_MESSAGE, WEIGHT_REASSURE_TOAST_MS } from '@/lib/calorieConstants'
 
 const LIST_LIMIT = 30
 const PERIODS: { value: CheatChartPeriod; label: string }[] = [
@@ -50,7 +53,7 @@ export default function WeightPage() {
   // 順調の判定（16章）に使うさかのぼる月の初日〜今日のメシため・うごための記録（今日の画面と同じ取り方。持ち越しのため）
   const [monthMealLogs, setMonthMealLogs] = useState<MealLogRow[]>([])
   const [monthExerciseLogs, setMonthExerciseLogs] = useState<ExerciseLogRow[]>([])
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ message: string; durationMs: number } | null>(null)
   const clearToast = useCallback(() => setToast(null), [])
   const [period, setPeriod] = useState<CheatChartPeriod>('month')
   const [loading, setLoading] = useState(true)
@@ -111,7 +114,7 @@ export default function WeightPage() {
     [period, today, logs, wants, heartyLogs, slotTargets]
   )
   // 順調（16章）：今日の画面の「◯月のチート」と同じ判定（食べた分 ≧ 1 かつ まだの分 0）
-  const onPace = useMemo(
+  const monthStatus = useMemo(
     () =>
       calcMonthCheatStatus({
         year,
@@ -121,8 +124,18 @@ export default function WeightPage() {
         mealLogs: monthMealLogs,
         exerciseLogs: monthExerciseLogs,
         slotTargets,
-      }).onTrack,
+      }),
     [wants, year, month, slotTargets, today, monthMealLogs, monthExerciseLogs]
+  )
+  const onPace = monthStatus.onTrack
+  // 戻り予報（17章）：むくみやすい日は日付のあるチートと品なしの🔥チートで決まる（hearty の記録はぜんぶ読んである）
+  const retention = useMemo(
+    () => calcWaterRetention({ wants, mealLogs: heartyLogs, weightLogs: logs, date: today, today }),
+    [wants, heartyLogs, logs, today]
+  )
+  const waterLine = useMemo(
+    () => describeWaterReturnLine({ retention, wants, mealLogs: heartyLogs, today }),
+    [retention, wants, heartyLogs, today]
   )
   // 「これだけ食べて、月初めから◯kg減」（13.4。今日のカードから移した）
   const monthWeightChange = useMemo(() => calcMonthWeightChange(logs, today), [logs, today])
@@ -133,12 +146,23 @@ export default function WeightPage() {
     [goal, average.avgKg, today]
   )
 
-  // 体重を保存したら、上がった日のひと言（15.3）
+  // 体重を保存したら：戻り予報のトースト（17章）。当てはまらなければ上がった日のひと言（15.3）
   function upsertLocal(row: WeightLog) {
     const next = [...logs.filter((l) => l.measured_at !== row.measured_at), row].sort((a, b) =>
       a.measured_at.localeCompare(b.measured_at)
     )
     setLogs(next)
+    const water = describeWaterReturnToast({
+      retention: calcWaterRetention({ wants, mealLogs: heartyLogs, weightLogs: next, date: row.measured_at, today }),
+      weightKg: Number(row.weight_kg),
+      onTrack: onPace,
+      pendingKcal: monthStatus.pendingKcal,
+      today,
+    })
+    if (water) {
+      setToast({ message: water, durationMs: WATER_TOAST_MS })
+      return
+    }
     const show = shouldShowWeightReassurance({
       logs: next,
       date: row.measured_at,
@@ -146,7 +170,7 @@ export default function WeightPage() {
       onPace,
       risingThreeWeeks: isWeightRisingThreeWeeks(next, today),
     })
-    if (show) setToast(WEIGHT_REASSURE_MESSAGE)
+    if (show) setToast({ message: WEIGHT_REASSURE_MESSAGE, durationMs: WEIGHT_REASSURE_TOAST_MS })
   }
 
   const prevDate = addDaysToDateStr(viewDate, -1)
@@ -232,7 +256,11 @@ export default function WeightPage() {
                 </h2>
                 <span className="text-amber-400 font-bold">{chart.totalKcal.toLocaleString('ja-JP')}kcal</span>
               </div>
-              <WeightChart key={period} data={chart} />
+              <WeightChart
+                key={period}
+                data={chart}
+                returnDate={retention?.inReturnPeriod ? retention.returnDate : null}
+              />
               <div className="flex gap-4 text-[11px] text-stone-500 mt-1 px-1">
                 <span><span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-200/40 align-middle mr-1" />食べたチート（累計）</span>
                 <span><span className="inline-block w-3 h-0.5 bg-stone-100 align-middle mr-1" />ならした線</span>
@@ -293,6 +321,8 @@ export default function WeightPage() {
               {monthWeightChange !== null && (
                 <p className="text-stone-300 text-xs mt-2 px-1">{describeMonthWeightChange(monthWeightChange)}</p>
               )}
+              {/* 戻り予報（17章）：戻り期間中で、最新の体重がまだ高いときだけ */}
+              {waterLine && <p className="text-stone-400 text-xs mt-2 px-1">{waterLine}</p>}
             </section>
 
             {/* 記録の一覧 */}
@@ -333,7 +363,7 @@ export default function WeightPage() {
         )}
       </div>
 
-      {toast && <Toast message={toast} durationMs={WEIGHT_REASSURE_TOAST_MS} onDone={clearToast} />}
+      {toast && <Toast message={toast.message} durationMs={toast.durationMs} onDone={clearToast} />}
 
       <BottomNav active="weight" />
     </div>

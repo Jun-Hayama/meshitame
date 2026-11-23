@@ -83,11 +83,6 @@ export const WEIGHT_INPUT_MAX_KG = 300
 export const WEIGHT_AVG_DAYS = 7
 export const WEIGHT_AVG_MIN_COUNT = 3
 
-// 進捗チャート（11-4）：期間の切り替え（日数）。全期間は開始日〜計画の終わり
-export const CHART_PERIOD_DAYS = { '1m': 30, '3m': 90 } as const
-// 縦軸の上下の余白（kg）
-export const CHART_Y_PADDING_KG = 0.5
-
 // ゲート達成と健康メリットの一言（11-5）。開始体重からの減量率で判定する（7日平均・参考値でないとき）
 export const HEALTH_MILESTONES = [
   { kind: 'loss3', ratio: 0.03, message: '血糖値や中性脂肪の改善が期待できるライン' },
@@ -164,3 +159,12 @@ export const ACTIVITY_LEVEL_NOTE =
 // 今日の記録の小見出しの右の一言（16-追記 v2.6.4）
 export const MESHITAME_SECTION_NOTE = `軽めにすると${TAMEMESHI_PT}kcal`
 export const EXERCISE_SECTION_NOTE = '意識して動いた分'
+
+// 戻り予報（17章）：最後のむくみやすい日の翌日を1日目として、3日目までが戻り期間（3日目が戻りそうな日）
+export const WATER_RETURN_DAYS = 3
+// 体重を保存したあとのトーストを判定するのは5日目まで
+export const WATER_TOAST_MAX_DAY = 5
+// 基準より0.3kg以上高ければ「増えている」、0.2kg以下なら「戻った」
+export const WATER_UP_KG = 0.3
+export const WATER_BACK_KG = 0.2
+export const WATER_TOAST_MS = 4000

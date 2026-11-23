@@ -29,7 +29,11 @@ import {
   calcMonthCheatStatus,
   getCheatLoadFrom,
   calcWeightAverage,
+  calcWaterRetention,
   describeRecordToast,
+  describeWaterReturnToast,
+  describeWaterTodayLine,
+  listWaterHeavyDays,
   detectNewlyCleared,
   addDaysToDateStr,
   formatDateJST,
@@ -48,6 +52,7 @@ import {
   WEIGHT_REASSURE_MESSAGE,
   WEIGHT_REASSURE_TOAST_MS,
   WEIGHT_RISING_WEEKS,
+  WATER_TOAST_MS,
   UNDO_TOAST_MS,
   MESHITAME_SECTION_NOTE,
 } from '@/lib/calorieConstants'
@@ -391,10 +396,27 @@ export default function Home() {
     setPicker({ target: { kind: 'extra', date }, editing, canRemove: !!editing })
   }
 
-  // 体重を保存したら、上がった日のひと言（15.3）
+  // 今日がむくみやすい日か（17章）。予定のチートは今日の分まで数える
+  const todayWaterHeavy = useMemo(
+    () => listWaterHeavyDays({ wants, mealLogs, until: today }).includes(today),
+    [wants, mealLogs, today]
+  )
+
+  // 体重を保存したら：戻り予報のトースト（17章）。当てはまらなければ上がった日のひと言（15.3）
   function handleWeightSaved(row: WeightLog) {
     const next = [...weightLogs.filter((w) => w.measured_at !== row.measured_at), row]
     setWeightLogs(next)
+    const water = describeWaterReturnToast({
+      retention: calcWaterRetention({ wants, mealLogs, weightLogs: next, date: row.measured_at, today }),
+      weightKg: Number(row.weight_kg),
+      onTrack: status.onTrack,
+      pendingKcal: status.pendingKcal,
+      today,
+    })
+    if (water) {
+      setToast({ message: water, durationMs: WATER_TOAST_MS })
+      return
+    }
     const show = shouldShowWeightReassurance({
       logs: next,
       date: row.measured_at,
@@ -526,6 +548,10 @@ export default function Home() {
             }}
             onOpenHints={setHints}
           />
+          {/* 戻り予報（17章）：今日がむくみやすい日のときだけ。カードの枠の外 */}
+          {isToday && todayWaterHeavy && (
+            <p className="text-stone-400 text-xs mt-2 px-1">{describeWaterTodayLine(today)}</p>
+          )}
         </section>
         {/* 今日の記録：メシため（16章 3-1）とうごため（16-追記 v2.6.3・v2.6.4） */}
         <section className="mb-8">
