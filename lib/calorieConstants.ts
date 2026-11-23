@@ -122,8 +122,9 @@ export const WEIGHT_RISING_WEEKS = 3
 export const WEIGHT_RISING_MIN_KG = 0.1
 
 // ◯月のチート（16章）
-// 持ち越し：前月末のまだの分は、翌月のこの日まで（1日目から数えて）のメシため・うごためで当てる
-export const CARRYOVER_DAYS = 7
+// 持ち越し（v2.6.1）：持ち越しはその前の月の持ち越しで決まるので、この月数だけさかのぼって順に計算する
+// （いちばん古い月の持ち越しは0とする。記録はこの月数前の月の初日から読む）
+export const CARRYOVER_LOOKBACK_MONTHS = 3
 // カード A の絵文字：まとめたあとがこれ以上なら、いちばん多い絵文字 × 件数の1つだけ出す
 export const PENDING_EMOJI_MAX_GROUPS = 6
 // チートを足す画面の「よく食べるもの」：直近この日数に記録した回数の多い順で、この数まで

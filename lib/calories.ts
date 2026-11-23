@@ -88,7 +88,7 @@ import {
   LOG_DAYS,
   CHART_WEIGHT_HALF_RANGE_KG,
   CHART_WEIGHT_EXPAND_PAD_KG,
-  CARRYOVER_DAYS,
+  CARRYOVER_LOOKBACK_MONTHS,
   PENDING_EMOJI_MAX_GROUPS,
   FREQUENT_ITEM_DAYS,
   FREQUENT_ITEM_MAX,
@@ -642,7 +642,7 @@ export function sumCheatItemsKcal(items: Pick<CheatItemSelection, 'kcal' | 'qty'
   return items.reduce((sum, i) => sum + i.kcal * i.qty, 0)
 }
 
-// 食事のチート（replace）：合計 − その食事の目安（下回るときは0）/ 食事のほかに（addon）：合計そのまま
+// 食事のチート（replace）：合計 − その食事の目安（下回るときは0）/ 追加チート（addon）：合計そのまま
 export function calcCheatCost(cheatType: CheatType, totalKcal: number, slotTargetKcal: number): number {
   return cheatType === 'replace' ? Math.max(0, totalKcal - slotTargetKcal) : totalKcal
 }
@@ -703,12 +703,12 @@ export function getMonthDateRange(year: number, month: number): { from: string; 
   return { from: `${prefix}-01`, to: `${prefix}-${String(getDaysInMonth(year, month)).padStart(2, '0')}` }
 }
 
-// 足した場所：食事のチート（cheat_type = replace）は朝・昼・夜（未指定は夜）。それ以外は食事のほかに
+// 足した場所：食事のチート（cheat_type = replace）は朝・昼・夜（未指定は夜）。それ以外は追加チート
 export function getCheatPlace(row: Pick<MonthlyWantRow, 'cheat_type' | 'replace_slot'>): CheatPlace {
   return row.cheat_type === 'replace' ? (row.replace_slot ?? 'dinner') : 'extra'
 }
 
-// 同じ日の並び：朝・昼・夜・食事のほかに
+// 同じ日の並び：朝・昼・夜・追加チート
 const PLACE_ORDER: CheatPlace[] = ['morning', 'lunch', 'dinner', 'extra']
 
 // 日付のあるチート（頻度ベース以外）
@@ -764,7 +764,7 @@ function cheatFromHearty(e: HeartyCheatEntry): MonthCheat {
   return { kind: 'hearty', key: `hearty:${e.date}:${e.slot}`, date: e.date, place: e.slot, costKcal: e.costPt, row: null }
 }
 
-// なかったことにする順番：日付の早い順、同じ日は朝・昼・夜・食事のほかに、さらに登録順
+// なかったことにする順番：日付の早い順、同じ日は朝・昼・夜・追加チート、さらに登録順
 function compareCheats(a: MonthCheat, b: MonthCheat): number {
   return (
     a.date.localeCompare(b.date) ||
@@ -804,8 +804,9 @@ export function calcEarnedBreakdown(input: {
     (l) => l.choice === 'light' && inRange(l.log_date) && !replacedMealKeys?.has(`${l.log_date}:${l.slot}`)
   ).length
   const tamemeshiPt = tamemeshiCount * TAMEMESHI_PT
-  const exercisePt = exerciseLogs.filter((l) => inRange(l.log_date)).reduce((sum, l) => sum + l.points, 0)
-  return { tamemeshiCount, tamemeshiPt, exercisePt, totalPt: tamemeshiPt + exercisePt }
+  const exercises = exerciseLogs.filter((l) => inRange(l.log_date))
+  const exercisePt = exercises.reduce((sum, l) => sum + l.points, 0)
+  return { tamemeshiCount, tamemeshiPt, exerciseCount: exercises.length, exercisePt, totalPt: tamemeshiPt + exercisePt }
 }
 
 // その月の今日までの貯めた分（どの日の分も同じ月に入る）
@@ -830,29 +831,38 @@ type MonthCheatInput = {
   month: number
   today: string // YYYY-MM-DD（日本時間）
   wants: MonthlyWantRow[]
-  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[] // 前月の初日から読む（持ち越しのため）
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[] // getCheatLoadFrom の日から読む（持ち越しのため）
   exerciseLogs: { log_date: string; points: number }[]
   slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
 }
 
-// 持ち越し：前月末のまだの分（前月の持ち越しは含めない）。翌月7日までのメシため・うごためで当てる
-// 7日が終わったら、7日までに当てた分だけを残し、残りは消す
-export function calcCarryover(input: MonthCheatInput): Carryover {
-  const { year, month, today, wants, mealLogs, exerciseLogs, slotTargets } = input
-  const prevYear = month === 1 ? year - 1 : year
-  const prevMonth = month === 1 ? 12 : month - 1
-  const prev = getMonthDateRange(prevYear, prevMonth)
-  const replacedMealKeys = getReplacedMealKeys(wants)
-  const prevEaten = listCheatsInRange({ wants, mealLogs, slotTargets, ...prev }).reduce((s, c) => s + c.costKcal, 0)
-  const prevSaved = calcEarnedBreakdown({ ...prev, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
-  const fullKcal = Math.max(0, prevEaten - prevSaved)
+// n か月ずらした年・月
+function shiftMonth(year: number, month: number, n: number): { year: number; month: number } {
+  const index = year * 12 + (month - 1) + n
+  return { year: Math.floor(index / 12), month: (index % 12) + 1 }
+}
 
-  const { from } = getMonthDateRange(year, month)
-  const deadline = addDaysToDateStr(from, CARRYOVER_DAYS - 1)
-  const open = today <= deadline
-  if (open || fullKcal === 0) return { fullKcal, kcal: fullKcal, open }
-  const savedByDeadline = calcEarnedBreakdown({ from, to: deadline, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
-  return { fullKcal, kcal: Math.min(fullKcal, savedByDeadline), open }
+// ◯月のチートの計算に要る記録の読み込み開始日（持ち越しのため、さかのぼる月の初日）
+export function getCheatLoadFrom(year: number, month: number): string {
+  const start = shiftMonth(year, month, -CARRYOVER_LOOKBACK_MONTHS)
+  return getMonthDateRange(start.year, start.month).from
+}
+
+// 持ち越し（v2.6.1）：前月のチート（前月の持ち越しは含めない）のうち、前月末にまだの分。期限はなく、今月の月末まで当てる
+// 持ち越す量 = max(0, その月のチート − max(0, その月の貯めた分 − 前月からの持ち越し))
+// 前月の持ち越しはさらに前の月で決まるので、CARRYOVER_LOOKBACK_MONTHS か月前から順に計算する（いちばん古い月は0）
+export function calcCarryover(input: MonthCheatInput): Carryover {
+  const { year, month, wants, mealLogs, exerciseLogs, slotTargets } = input
+  const replacedMealKeys = getReplacedMealKeys(wants)
+  let carry = 0
+  for (let n = CARRYOVER_LOOKBACK_MONTHS; n >= 1; n--) {
+    const m = shiftMonth(year, month, -n)
+    const range = getMonthDateRange(m.year, m.month)
+    const cheats = listCheatsInRange({ wants, mealLogs, slotTargets, ...range }).reduce((s, c) => s + c.costKcal, 0)
+    const saved = calcEarnedBreakdown({ ...range, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
+    carry = Math.max(0, cheats - Math.max(0, saved - carry))
+  }
+  return { kcal: carry }
 }
 
 // ◯月のチート（16章）。持ち越し → 日付順に貯めた分を当て、全額に届いたものを「なかったことに」
@@ -893,8 +903,6 @@ export function calcMonthCheatStatus(input: MonthCheatInput): MonthCheatStatus {
     entries,
     earned,
     carryoverKcal: carry.kcal,
-    carryoverFullKcal: carry.fullKcal,
-    carryoverOpen: carry.open && carry.fullKcal > 0,
     eatenKcal,
     savedKcal,
     clearedKcal: Math.min(savedKcal, eatenKcal),
@@ -954,12 +962,12 @@ export function getCheatEmoji(cheat: MonthCheat): string {
   return getCheatRowEmoji(cheat.row as MonthlyWantRow)
 }
 
-// カード A の1行目：まだの分になっているチートの絵文字（同じ絵文字は ×n にまとめる）
+// カードの「食べた」の行：その月に食べたチートの絵文字（持ち越しは除く。同じ絵文字は ×n にまとめる）
 // まとめたあとが6個以上なら、いちばん多い絵文字 × 件数の1つだけ（同じ数なら先に出てきたもの）
-export function buildPendingEmojis(status: MonthCheatStatus): { emoji: string; count: number }[] {
+export function buildEatenEmojis(status: MonthCheatStatus): { emoji: string; count: number }[] {
   const groups: { emoji: string; count: number }[] = []
   for (const e of status.entries) {
-    if (e.cleared || e.cheat.kind === 'carryover') continue
+    if (e.cheat.kind === 'carryover') continue
     const emoji = getCheatEmoji(e.cheat)
     const found = groups.find((g) => g.emoji === emoji)
     if (found) found.count += 1
@@ -970,19 +978,24 @@ export function buildPendingEmojis(status: MonthCheatStatus): { emoji: string; c
   return [{ emoji: top.emoji, count: groups.reduce((s, g) => s + g.count, 0) }]
 }
 
-// まだの分になっている持ち越しがあるか（カード A の「先月の分」）
-export function hasPendingCarryover(status: MonthCheatStatus): boolean {
-  return status.entries.some((e) => e.cheat.kind === 'carryover' && !e.cleared)
-}
-
-// 今月食べたチートが1つ以上あるか（持ち越しは含めない。カード B の1行目）
+// 今月食べたチートが1つ以上あるか（持ち越しは含めない）
 export function hasMonthCheats(status: MonthCheatStatus): boolean {
   return status.entries.some((e) => e.cheat.kind !== 'carryover')
 }
 
-// カードの棒：食べた分のうち、なかったことにできた割合
-export function calcClearedRatio(status: MonthCheatStatus): number {
-  return status.eatenKcal > 0 ? Math.min(1, status.clearedKcal / status.eatenKcal) : 0
+// カードの2本の棒（v2.6.1）：同じ目盛り。いちばん右 = 食べた分と貯めた分の大きいほう。両方0なら棒なし（null）
+// 食べたの棒のうち cleared までが、なかったことにできた部分
+export function calcCheatCardBars(
+  status: Pick<MonthCheatStatus, 'eatenKcal' | 'savedKcal' | 'clearedKcal'>
+): { scaleKcal: number; eaten: number; cleared: number; saved: number } | null {
+  const scaleKcal = Math.max(status.eatenKcal, status.savedKcal)
+  if (scaleKcal <= 0) return null
+  return {
+    scaleKcal,
+    eaten: status.eatenKcal / scaleKcal,
+    cleared: Math.min(status.clearedKcal, status.eatenKcal) / scaleKcal,
+    saved: status.savedKcal / scaleKcal,
+  }
 }
 
 export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、メシためでなかったことに。'
@@ -1155,7 +1168,7 @@ export function buildLogDays(input: {
     const dayCheats: LogEntry[] = cheats
       .filter((c) => c.date === d)
       .map((cheat) => ({ kind: 'cheat', cheat, kcal: cheat.costKcal }))
-    // 朝・昼・夜・食事のほかにの順（同じ食事はメシため → チート）
+    // 朝・昼・夜・追加チートの順（同じ食事はメシため → チート）
     const placed = [...meals, ...dayCheats].sort((a, b) => {
       const place = (e: LogEntry) => (e.kind === 'meal' ? e.log.slot : e.kind === 'cheat' ? e.cheat.place : 'extra')
       return PLACE_ORDER.indexOf(place(a)) - PLACE_ORDER.indexOf(place(b))

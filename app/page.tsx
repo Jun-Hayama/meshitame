@@ -24,6 +24,7 @@ import {
   calcPaceKgPerMonth,
   calcMealSlotTargets,
   calcMonthCheatStatus,
+  getCheatLoadFrom,
   calcWeightAverage,
   describeExerciseToast,
   describeMeshitameToast,
@@ -65,7 +66,7 @@ const CHOICES: MealChoice[] = ['light', 'normal', 'hearty']
 
 type PickerState = { target: CheatPickerTarget; editing: MonthlyWantRow | null; canRemove: boolean }
 
-// 「食事のほかに」のチップ：品が1つなら「🍺×2」「🍰ケーキ」、2つ以上なら絵文字と名前
+// 「追加チート」のチップ：品が1つなら「🍺×2」「🍰ケーキ」、2つ以上なら絵文字と名前
 function extraChipLabel(row: MonthlyWantRow): string {
   const items = row.items ?? []
   if (items.length === 1) return `${getCheatRowEmoji(row)}${items[0].qty > 1 ? `×${items[0].qty}` : items[0].name}`
@@ -95,9 +96,8 @@ export default function Home() {
   const year = Number(today.slice(0, 4))
   const month = Number(today.slice(5, 7))
   const recordRange = getRecordableDateRange(today)
-  // 記録の読み込み範囲：前月の初日〜今日（持ち越し（16章）と、7日前までの表示のため）
-  const prevMonthStart = month === 1 ? `${year - 1}-12-01` : `${year}-${String(month - 1).padStart(2, '0')}-01`
-  const loadFrom = prevMonthStart
+  // 記録の読み込み範囲：持ち越し（16-追記 v2.6.1）のためにさかのぼる月の初日〜今日（7日前までの表示もこの中）
+  const loadFrom = getCheatLoadFrom(year, month)
   // 体重は、表示できる一番前の日の前日までの7日平均（15.3）と、今日・7日前・14日前の前週比（15.3）まで出せるように読む
   const weightFrom = addDaysToDateStr(today, -(WEIGHT_AVG_DAYS * WEIGHT_RISING_WEEKS + WEIGHT_AVG_DAYS - 1))
   const weightLoadFrom = weightFrom < recordRange.min ? weightFrom : recordRange.min
@@ -201,7 +201,7 @@ export default function Home() {
   const todayAverage = calcWeightAverage(weightLogs, today)
   const { milestones, dismiss: dismissMilestone } = useMilestones(goal, todayAverage)
 
-  // 表示中の日の、その食事のチート（品つき）と「食事のほかに」のチート
+  // 表示中の日の、その食事のチート（品つき）と「追加チート」
   const viewCheats = wants.filter((w) => w.scheduled_date === viewDate)
   const mealCheatRows = (slot: MealSlot) => viewCheats.filter((w) => getCheatPlace(w) === slot)
   const extraRows = viewCheats
@@ -512,25 +512,29 @@ export default function Home() {
               )
             })}
 
-            {/* 食事のほかに */}
+            {/* 追加チート */}
             <div className="bg-stone-900 rounded-2xl px-4 py-3 flex items-center gap-2">
-              <p className="text-sm font-medium shrink-0 mr-1">食事のほかに</p>
-              <div className="flex gap-1.5 flex-1 min-w-0 overflow-x-auto">
-                {extraRows.map((row) => (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => openExtra(viewDate, row)}
-                    className="shrink-0 bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/40 rounded-full px-2.5 py-1 text-xs"
-                  >
-                    {extraChipLabel(row)}
-                  </button>
-                ))}
-              </div>
+              <p className="text-sm font-medium shrink-0 mr-1">追加チート</p>
+              {extraRows.length === 0 ? (
+                <p className="text-stone-500 text-xs flex-1 min-w-0 truncate">おやつ・お酒・2軒目など</p>
+              ) : (
+                <div className="flex gap-1.5 flex-1 min-w-0 overflow-x-auto">
+                  {extraRows.map((row) => (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => openExtra(viewDate, row)}
+                      className="shrink-0 bg-amber-400/10 text-amber-400 ring-1 ring-amber-400/40 rounded-full px-2.5 py-1 text-xs"
+                    >
+                      {extraChipLabel(row)}
+                    </button>
+                  ))}
+                </div>
+              )}
               <button
                 type="button"
                 onClick={() => openExtra(viewDate)}
-                aria-label="食事のほかにチートを足す"
+                aria-label="追加チートを足す"
                 className="shrink-0 w-8 h-8 rounded-full bg-stone-800 text-amber-400 text-lg leading-none"
               >
                 ＋

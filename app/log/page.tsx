@@ -31,6 +31,7 @@ import {
   calcExerciseMinutes,
   calcMealSlotTargets,
   calcMonthCheatStatus,
+  getCheatLoadFrom,
   calcWeekSummary,
   describeWeekEarned,
   detectNewlyCleared,
@@ -72,8 +73,8 @@ export default function LogPage() {
   const year = Number(today.slice(0, 4))
   const month = Number(today.slice(5, 7))
   const monthStart = `${today.slice(0, 7)}-01`
-  // 一覧（14日分）・今週・今月の合計・持ち越し（前月の初日から）に要る範囲
-  const loadFrom = month === 1 ? `${year - 1}-12-01` : `${year}-${String(month - 1).padStart(2, '0')}-01`
+  // 一覧（14日分）・今週・今月の合計・持ち越し（さかのぼる月の初日から）に要る範囲
+  const loadFrom = getCheatLoadFrom(year, month)
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -164,10 +165,10 @@ export default function LogPage() {
               </p>
             </section>
 
-            {status.carryoverOpen && (
+            {status.carryoverKcal > 0 && (
               <p className="bg-stone-900 rounded-2xl px-4 py-2.5 text-sm flex justify-between">
                 <span>先月の分</span>
-                <span className="text-stone-300">{kcal(status.carryoverFullKcal)}</span>
+                <span className="text-stone-300">{kcal(status.carryoverKcal)}</span>
               </p>
             )}
 

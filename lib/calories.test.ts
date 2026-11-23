@@ -81,10 +81,10 @@ import {
   detectNewlyCleared,
   getCheatName,
   getCheatItemEmojis,
-  buildPendingEmojis,
-  hasPendingCarryover,
+  buildEatenEmojis,
   hasMonthCheats,
-  calcClearedRatio,
+  calcCheatCardBars,
+  getCheatLoadFrom,
   describePendingLine,
   describeSpareLine,
   describePlannedLine,
@@ -536,7 +536,7 @@ describe('週の振り返り（12-5）', () => {
       from: '2026-11-30', mealLogs, exerciseLogs, wants: [banshaku], slotTargets: [], weightLogs: [],
     })
     expect(week.to).toBe('2026-12-06')
-    expect(week.earned).toEqual({ tamemeshiCount: 2, tamemeshiPt: 300, exercisePt: 300, totalPt: 600 })
+    expect(week.earned).toEqual({ tamemeshiCount: 2, tamemeshiPt: 300, exerciseCount: 2, exercisePt: 300, totalPt: 600 })
     expect(week.cheats.map((e) => (e.kind === 'hearty' ? `🔥${e.date}` : `★${e.date}`))).toEqual(['🔥2026-12-02', '★2026-12-05'])
     expect(week.cheatKcal).toBe(800)
     expect(week.weightDiffKg).toBeNull()
@@ -1087,7 +1087,7 @@ describe('ログ（14.3）', () => {
     ])
   })
 
-  it('チートの行も出す（食事 → 食事のほかにの順）。食事のチートがある食事のメシためは出さない', () => {
+  it('チートの行も出す（食事 → 追加チートの順）。食事のチートがある食事のメシためは出さない', () => {
     const slotTargets = [
       { slot: 'morning' as const, kcal: 500 },
       { slot: 'lunch' as const, kcal: 700 },
@@ -1115,7 +1115,7 @@ describe('ログ（14.3）', () => {
     expect(days[0].entries.map((e) => [e.kind, e.kcal])).toEqual([
       ['cheat', 300], // 昼のラーメン 1000 − 700
       ['meal', 150], // 夜のメシため
-      ['cheat', 280], // 食事のほかに
+      ['cheat', 280], // 追加チート
     ])
     expect(buildLogDays({ today: '2026-11-10', mealLogs: [], exerciseLogs: [], wants, slotTargets, filter: 'meal' })).toEqual([])
   })
@@ -1362,7 +1362,7 @@ describe('◯月のチート（16章 v2.6）', () => {
   // 食事のチート（品つき）
   const mealCheat = (date: string, slot: 'morning' | 'lunch' | 'dinner', total: number, label = '焼肉') =>
     want({ scheduled_date: date, cheat_type: 'replace', replace_slot: slot, total_kcal: total, label })
-  // 食事のほかに
+  // 追加チート
   const extra = (date: string, total: number, label = 'ビール×2') => want({ scheduled_date: date, total_kcal: total, label })
   const log = (log_date: string, slot: 'morning' | 'lunch' | 'dinner', choice: 'light' | 'normal' | 'hearty') => ({
     log_date,
@@ -1388,7 +1388,7 @@ describe('◯月のチート（16章 v2.6）', () => {
     const list = (wants: MonthlyWantRow[], mealLogs: ReturnType<typeof log>[] = [], to = '2026-11-20') =>
       listCheatsInRange({ wants, mealLogs, slotTargets, from: '2026-11-01', to })
 
-    it('食事のチートは 合計 − その食事の目安（下限0）、食事のほかには合計そのまま', () => {
+    it('食事のチートは 合計 − その食事の目安（下限0）、追加チートは合計そのまま', () => {
       expect(list([mealCheat('2026-11-03', 'dinner', 1200)]).map((c) => c.costKcal)).toEqual([400])
       expect(list([mealCheat('2026-11-03', 'dinner', 500)]).map((c) => c.costKcal)).toEqual([0])
       expect(list([extra('2026-11-03', 280)]).map((c) => c.costKcal)).toEqual([280])
@@ -1419,7 +1419,7 @@ describe('◯月のチート（16章 v2.6）', () => {
   })
 
   describe('なかったことにする順番', () => {
-    it('持ち越しが先、日付順、同じ日は朝→昼→夜→食事のほかに', () => {
+    it('持ち越しが先、日付順、同じ日は朝→昼→夜→追加チート', () => {
       const s = status({
         today: '2026-11-05',
         wants: [
@@ -1448,7 +1448,6 @@ describe('◯月のチート（16章 v2.6）', () => {
       })
       expect(s.entries.map((e) => e.cleared)).toEqual([true, false])
       expect(s.clearedKcal).toBe(300)
-      expect(calcClearedRatio(s)).toBeCloseTo(0.6)
     })
   })
 
@@ -1517,46 +1516,61 @@ describe('◯月のチート（16章 v2.6）', () => {
     })
   })
 
-  describe('持ち越し', () => {
+  describe('持ち越し（16-追記 v2.6.1）', () => {
     const octCheat = extra('2026-10-25', 600, '10月の飲み会')
     const base = { wants: [octCheat], mealLogs: lights('2026-10-26', 2) } // 10月：600 − 300 = 300 のまだの分
+    const carry = (over: Partial<Parameters<typeof calcCarryover>[0]>) =>
+      calcCarryover({ year: 2026, month: 11, today: '2026-11-05', slotTargets, wants: [], mealLogs: [], exerciseLogs: [], ...over })
 
-    it('月末のまだの分が翌月に入る（7日まではまるごと）', () => {
-      const c = calcCarryover({ year: 2026, month: 11, today: '2026-11-05', slotTargets, exerciseLogs: [], ...base })
-      expect(c).toEqual({ fullKcal: 300, kcal: 300, open: true })
+    it('月末のまだの分が翌月に「先月の分」として入る', () => {
+      expect(carry(base)).toEqual({ kcal: 300 })
       const s = status({ today: '2026-11-05', ...base })
+      expect(s.carryoverKcal).toBe(300)
       expect(s.eatenKcal).toBe(300)
       expect(s.stage).toBe('pending')
-      expect(s.carryoverOpen).toBe(true)
-      expect(hasPendingCarryover(s)).toBe(true)
+      expect(getCheatName(s.entries[0].cheat)).toBe('先月の分')
       expect(hasMonthCheats(s)).toBe(false)
     })
 
-    it('7日までに当てた分は残り、8日以降は残りが消える', () => {
-      const mealLogs = [...base.mealLogs, ...lights('2026-11-06', 1)] // 11/6 に150
-      const day7 = status({ today: '2026-11-07', wants: base.wants, mealLogs })
-      expect(day7.pendingKcal).toBe(150)
-      const day8 = status({ today: '2026-11-08', wants: base.wants, mealLogs })
-      expect(day8.carryoverKcal).toBe(150)
-      expect(day8.pendingKcal).toBe(0)
-      expect(day8.carryoverOpen).toBe(false)
-      expect(day8.entries[0].cleared).toBe(true)
+    it('8日以降も残り、月末までのメシため・うごためで当てられる', () => {
+      const day20 = status({ today: '2026-11-20', ...base })
+      expect(day20.carryoverKcal).toBe(300)
+      expect(day20.pendingKcal).toBe(300)
+      const mealLogs = [...base.mealLogs, ...lights('2026-11-25', 1)]
+      const exerciseLogs = [{ log_date: '2026-11-28', points: 150 }]
+      const day30 = status({ today: '2026-11-30', wants: base.wants, mealLogs, exerciseLogs })
+      expect(day30.carryoverKcal).toBe(300)
+      expect(day30.pendingKcal).toBe(0)
+      expect(day30.entries[0].cleared).toBe(true)
     })
 
-    it('8日以降のメシため・うごためは持ち越しに当てない', () => {
-      const s = status({ today: '2026-11-20', wants: base.wants, mealLogs: [...base.mealLogs, ...lights('2026-11-10', 2)] })
-      expect(s.carryoverKcal).toBe(0)
-      expect(s.entries).toHaveLength(0)
-      expect(s.spareKcal).toBe(300)
+    it('翌月末に残った持ち越しは、翌々月に入らない', () => {
+      // 10月のまだの分300が11月に入り、11月は貯めた分0 → 12月には持ち越さない
+      const dec = calcMonthCheatStatus({ year: 2026, month: 12, today: '2026-12-03', slotTargets, exerciseLogs: [], ...base })
+      expect(dec.carryoverKcal).toBe(0)
+      expect(dec.entries).toHaveLength(0)
     })
 
-    it('余りは持ち越さない。持ち越しのさらに持ち越しはしない', () => {
+    it('持ち越す量 = max(0, その月のチート − max(0, 貯めた分 − 前月からの持ち越し))', () => {
+      // 10月→11月に300持ち越し。11月のチート500
+      const nov = extra('2026-11-10', 500, '11月の飲み会')
+      const dec = (mealLogs: { log_date: string; slot: 'morning' | 'lunch' | 'dinner'; choice: 'light' | 'normal' | 'hearty' }[]) =>
+        calcCarryover({ year: 2026, month: 12, today: '2026-12-03', slotTargets, wants: [octCheat, nov], exerciseLogs: [], mealLogs: [...base.mealLogs, ...mealLogs] })
+      // 持ち越しを返しきれなかった月：11月に150 → 500 − max(0, 150 − 300) = 500
+      expect(dec(lights('2026-11-11', 1))).toEqual({ kcal: 500 })
+      // ちょうど返しきった月：11月に300 → 500 − 0 = 500
+      expect(dec(lights('2026-11-11', 2))).toEqual({ kcal: 500 })
+      // 余りがあった月：11月に600 → 500 − 300 = 200
+      expect(dec(lights('2026-11-11', 4))).toEqual({ kcal: 200 })
+      // 11月のチートを全部返せた：11月に900 → 0
+      expect(dec(lights('2026-11-11', 6))).toEqual({ kcal: 0 })
+    })
+
+    it('余りは持ち越さない', () => {
       const spare = status({ today: '2026-11-03', wants: [extra('2026-10-25', 100)], mealLogs: lights('2026-10-26', 3) })
+      expect(spare.carryoverKcal).toBe(0)
       expect(spare.savedKcal).toBe(0)
       expect(spare.eatenKcal).toBe(0)
-      // 9月のまだの分は11月に入らない
-      const sep = status({ today: '2026-11-03', wants: [extra('2026-09-25', 900)] })
-      expect(sep.carryoverKcal).toBe(0)
     })
 
     it('1月は前の年の12月から持ち越す', () => {
@@ -1564,6 +1578,44 @@ describe('◯月のチート（16章 v2.6）', () => {
         year: 2027, month: 1, today: '2027-01-02', slotTargets, exerciseLogs: [], mealLogs: [], wants: [extra('2026-12-31', 280)],
       })
       expect(c.kcal).toBe(280)
+    })
+
+    it('読み込み開始日は3か月前の月の初日', () => {
+      expect(getCheatLoadFrom(2026, 11)).toBe('2026-08-01')
+      expect(getCheatLoadFrom(2027, 2)).toBe('2026-11-01')
+    })
+  })
+
+  describe('カードの2本の棒（16-追記 v2.6.1）', () => {
+    it('目盛りの最大は食べた分と貯めた分の大きいほう', () => {
+      const eatenMore = status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 1) })
+      expect(calcCheatCardBars(eatenMore)).toEqual({ scaleKcal: 300, eaten: 1, cleared: 0.5, saved: 0.5 })
+      const savedMore = status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 4) })
+      expect(calcCheatCardBars(savedMore)).toEqual({ scaleKcal: 600, eaten: 0.5, cleared: 0.5, saved: 1 })
+    })
+
+    it('食べたの棒の濃い部分は、貯めた分で当てた分（1件の途中でも伸びる）', () => {
+      const s = status({ wants: [extra('2026-11-02', 200), extra('2026-11-05', 400)], mealLogs: lights('2026-11-06', 2) })
+      expect(calcCheatCardBars(s)).toEqual({ scaleKcal: 600, eaten: 1, cleared: 0.5, saved: 0.5 })
+    })
+
+    it('食べた分0のときは食べたの棒が空', () => {
+      const s = status({ mealLogs: lights('2026-11-03', 2) })
+      expect(calcCheatCardBars(s)).toEqual({ scaleKcal: 300, eaten: 0, cleared: 0, saved: 1 })
+      expect(s.stage).toBe('spare')
+    })
+
+    it('両方0のときは棒なし', () => {
+      expect(calcCheatCardBars(status({}))).toBeNull()
+    })
+
+    it('貯めた分の回数：メシためとうごため', () => {
+      const s = status({
+        mealLogs: lights('2026-11-03', 5),
+        exerciseLogs: [{ log_date: '2026-11-04', points: 100 }, { log_date: '2026-11-05', points: 50 }],
+      })
+      expect(s.earned.tamemeshiCount).toBe(5)
+      expect(s.earned.exerciseCount).toBe(2)
     })
   })
 
@@ -1582,13 +1634,14 @@ describe('◯月のチート（16章 v2.6）', () => {
       expect(status({ wants: [extra('2026-11-02', 300)], mealLogs: lights('2026-11-03', 2) }).stage).toBe('empty') // ちょうど
     })
 
-    it('A の絵文字：まだの分だけ、同じ絵文字は ×n。6種類以上なら1つにまとめる', () => {
+    it('食べたの絵文字：その月のチート全部、同じ絵文字は ×n。6種類以上なら1つにまとめる', () => {
       const beer = (date: string) => want({ scheduled_date: date, items: [{ genre: 'alcohol', name: 'ビール350ml', kcal: 140, qty: 1 }] })
+      const octBeer = want({ scheduled_date: '2026-10-20', items: [{ genre: 'alcohol', name: 'ビール350ml', kcal: 140, qty: 1 }], total_kcal: 140 })
       const s = status({
         wants: [beer('2026-11-02'), beer('2026-11-03'), mealCheat('2026-11-04', 'dinner', 1200), beer('2026-11-05')],
         mealLogs: [log('2026-11-06', 'dinner', 'hearty')],
       })
-      expect(buildPendingEmojis(s)).toEqual([
+      expect(buildEatenEmojis(s)).toEqual([
         { emoji: '🍺', count: 3 },
         { emoji: '★', count: 1 },
         { emoji: '🔥', count: 1 },
@@ -1597,7 +1650,11 @@ describe('◯月のチート（16章 v2.6）', () => {
       const many = status({
         wants: genres.map((genre, i) => want({ scheduled_date: `2026-11-0${i + 1}`, items: [{ genre, name: genre, kcal: 100, qty: 1 }] })),
       })
-      expect(buildPendingEmojis(many)).toEqual([{ emoji: '🍺', count: 7 }])
+      expect(buildEatenEmojis(many)).toEqual([{ emoji: '🍺', count: 7 }])
+      // なかったことにできたチートも出す。持ち越しは出さない
+      const cleared = status({ wants: [octBeer, beer('2026-11-02')], mealLogs: lights('2026-11-03', 3) })
+      expect(cleared.entries.every((e) => e.cleared)).toBe(true)
+      expect(buildEatenEmojis(cleared)).toEqual([{ emoji: '🍺', count: 1 }])
     })
   })
 
@@ -1630,10 +1687,10 @@ describe('◯月のチート（16章 v2.6）', () => {
       ],
       exerciseLogs: [{ log_date: '2026-11-07', points: 150 }, { log_date: '2026-10-30', points: 999 }],
     }
-    expect(calcMonthEarnedBreakdown(input)).toEqual({ tamemeshiCount: 2, tamemeshiPt: 300, exercisePt: 150, totalPt: 450 })
+    expect(calcMonthEarnedBreakdown(input)).toEqual({ tamemeshiCount: 2, tamemeshiPt: 300, exerciseCount: 1, exercisePt: 150, totalPt: 450 })
   })
 
-  it('食事のチートのある食事だけが対象。食事のほかに・頻度ベースは対象にしない', () => {
+  it('食事のチートのある食事だけが対象。追加チート・頻度ベースは対象にしない', () => {
     const keys = getReplacedMealKeys([
       mealCheat('2026-11-03', 'lunch', 900),
       extra('2026-11-03', 280),

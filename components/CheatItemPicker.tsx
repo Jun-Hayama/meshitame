@@ -1,7 +1,7 @@
 'use client'
 
 // チートを足す画面（docs/v2-spec.md 16章）。どこから足したかで数え方が決まる
-// meal：🔥チート（その食事の代わり。品なしでも保存OK）/ extra：食事のほかに / plan：予定に入れる（日付・食事を選ぶ）
+// meal：🔥チート（その食事の代わり。品なしでも保存OK）/ extra：追加チート / plan：予定に入れる（日付・食事を選ぶ）
 // monthly_wants の行だけを保存する。🔥チートの meal_logs（hearty）は呼び出し側で保存する
 
 import { useEffect, useMemo, useState } from 'react'
@@ -145,7 +145,7 @@ export function CheatItemPicker({
     target.kind === 'meal'
       ? `${MEAL_NAMES[target.slot]}をチートに`
       : target.kind === 'extra'
-        ? '食事のほかにチートを足す'
+        ? '追加チートを足す'
         : '予定に入れる'
   const note = PLACE_NOTES[isMeal ? 'meal' : 'extra']
 
@@ -475,7 +475,7 @@ export function CheatItemPicker({
   )
 }
 
-// 行が食事のチートか食事のほかにか（一覧の表示用）
+// 行が食事のチートか追加チートか（一覧の表示用）
 export function describeCheatPlace(row: Pick<MonthlyWantRow, 'cheat_type' | 'replace_slot'>): string {
   return CHEAT_PLACE_LABELS[getCheatPlace(row)]
 }

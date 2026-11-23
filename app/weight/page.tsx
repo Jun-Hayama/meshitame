@@ -18,6 +18,7 @@ import {
   calcDailyIntakeFromPace,
   calcMealSlotTargets,
   calcMonthCheatStatus,
+  getCheatLoadFrom,
   calcMonthWeightChange,
   calcTargetGap,
   calcWeekOverWeek,
@@ -46,7 +47,7 @@ export default function WeightPage() {
   const [goal, setGoal] = useState<GoalPlanRow | null>(null)
   const [wants, setWants] = useState<MonthlyWantRow[]>([])
   const [heartyLogs, setHeartyLogs] = useState<MealLogRow[]>([])
-  // 順調の判定（16章）に使う前月の初日〜今日のメシため・うごための記録（今日の画面と同じ取り方。持ち越しのため前月から）
+  // 順調の判定（16章）に使うさかのぼる月の初日〜今日のメシため・うごための記録（今日の画面と同じ取り方。持ち越しのため）
   const [monthMealLogs, setMonthMealLogs] = useState<MealLogRow[]>([])
   const [monthExerciseLogs, setMonthExerciseLogs] = useState<ExerciseLogRow[]>([])
   const [toast, setToast] = useState<string | null>(null)
@@ -58,7 +59,7 @@ export default function WeightPage() {
   const today = formatDateJST(new Date())
   const year = Number(today.slice(0, 4))
   const month = Number(today.slice(5, 7))
-  const prevMonthStart = month === 1 ? `${year - 1}-12-01` : `${year}-${String(month - 1).padStart(2, '0')}-01`
+  const cheatLoadFrom = getCheatLoadFrom(year, month)
   const recordRange = getRecordableDateRange(today)
   const [viewDate, setViewDate] = useState(today)
 
@@ -79,8 +80,8 @@ export default function WeightPage() {
         supabase.from('goal_plans').select('*').eq('user_id', user.id).eq('is_active', true).maybeSingle(),
         supabase.from('monthly_wants').select('*').eq('user_id', user.id).eq('is_active', true),
         supabase.from('meal_logs').select('*').eq('user_id', user.id).eq('choice', 'hearty'),
-        supabase.from('meal_logs').select('*').eq('user_id', user.id).gte('log_date', prevMonthStart).lte('log_date', today),
-        supabase.from('exercise_logs').select('*').eq('user_id', user.id).gte('log_date', prevMonthStart).lte('log_date', today),
+        supabase.from('meal_logs').select('*').eq('user_id', user.id).gte('log_date', cheatLoadFrom).lte('log_date', today),
+        supabase.from('exercise_logs').select('*').eq('user_id', user.id).gte('log_date', cheatLoadFrom).lte('log_date', today),
       ])
       const firstError = loadErr ?? goalErr ?? wantErr ?? heartyErr ?? mealErr ?? exerciseErr
       if (firstError) setError(firstError.message)
@@ -92,7 +93,7 @@ export default function WeightPage() {
       setMonthExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
       setLoading(false)
     })
-  }, [router, prevMonthStart, today])
+  }, [router, cheatLoadFrom, today])
 
   const byDate = useMemo(() => new Map(logs.map((l) => [l.measured_at, l])), [logs])
   const recent = useMemo(() => [...logs].reverse().slice(0, LIST_LIMIT), [logs])

@@ -76,17 +76,17 @@ export interface MonthlyWantRow {
   total_kcal: number | null
 }
 
-// 内部の区別（16章）：replace = 食事のチート（朝・昼・夜）/ addon = 食事のほかに。画面ではどちらも「チート」
+// 内部の区別（16章）：replace = 食事のチート（朝・昼・夜）/ addon = 追加チート。画面ではどちらも「チート」
 export type CheatType = 'replace' | 'addon'
 
-// チートを足した場所：朝・昼・夜（食事のチート）か、食事のほかに
+// チートを足した場所：朝・昼・夜（食事のチート）か、追加チート
 export type CheatPlace = 'morning' | 'lunch' | 'dinner' | 'extra'
 
 export const CHEAT_PLACE_LABELS: Record<CheatPlace, string> = {
   morning: '朝',
   lunch: '昼',
   dinner: '夜',
-  extra: '食事のほかに',
+  extra: '追加チート',
 }
 
 // チート1回分の中身（登録時の kcal をそのまま保存する）
@@ -240,6 +240,7 @@ export interface HeartyCheatEntry {
 export interface EarnedBreakdown {
   tamemeshiCount: number // メシため（light）の回数
   tamemeshiPt: number // メシため × 150
+  exerciseCount: number // うごためを記録した回数
   exercisePt: number
   totalPt: number
 }
@@ -262,14 +263,13 @@ export interface MonthCheat {
   key: string // 前後の比較用（行の id など）
   date: string // YYYY-MM-DD（持ち越しは月の初日）
   place: CheatPlace
-  costKcal: number // 食事のチート：合計 − その食事の目安（下限0）/ 食事のほかに：合計 / 品なしの🔥チート：300
+  costKcal: number // 食事のチート：合計 − その食事の目安（下限0）/ 追加チート：合計 / 品なしの🔥チート：300
   row: MonthlyWantRow | null
 }
 
+// 前月から持ち越した分（v2.6.1：前月のチートのうち、前月末にまだの分。月末まで当てられる）
 export interface Carryover {
-  fullKcal: number // 前月末のまだの分
-  kcal: number // 今月に数える分（7日まではまるごと。8日以降は7日までに当てた分だけ）
-  open: boolean // 7日まで
+  kcal: number
 }
 
 export interface CheatLedgerEntry {
@@ -290,11 +290,9 @@ export interface PlannedCheat {
 export type CheatCardStage = 'pending' | 'spare' | 'empty'
 
 export interface MonthCheatStatus {
-  entries: CheatLedgerEntry[] // なかったことにする順番（持ち越し → 日付 → 朝・昼・夜・食事のほかに）
+  entries: CheatLedgerEntry[] // なかったことにする順番（持ち越し → 日付 → 朝・昼・夜・追加チート）
   earned: EarnedBreakdown // 貯めた分の内訳
-  carryoverKcal: number
-  carryoverFullKcal: number
-  carryoverOpen: boolean // 7日までで、持ち越しがある（ログの「先月の分」）
+  carryoverKcal: number // 前月から持ち越した分（ログの「先月の分」。月末まで出す）
   eatenKcal: number // 食べた分（持ち越しを含む・今日まで）
   savedKcal: number // 貯めた分
   clearedKcal: number // min(貯めた分, 食べた分)
@@ -317,7 +315,7 @@ export type LogEntry =
 
 export interface LogDay {
   date: string // YYYY-MM-DD
-  entries: LogEntry[] // 朝・昼・夜・食事のほかに → うごため（記録した順）
+  entries: LogEntry[] // 朝・昼・夜・追加チート → うごため（記録した順）
 }
 
 // ===== v2.4 体重チャート：チートの累計（棒）＋体重（線）（14.4） =====
