@@ -1,88 +1,58 @@
 'use client'
 
-// 今週の行（docs/v2-spec.md 13.5・14.3・15.2）。「今週 +◯pt」の1行（順調なら「 ・ 順調です」）、タップで内訳。日曜・月曜は振り返り文に置き換える
+// 今週の行（docs/v2-spec.md 16章 6）。ログの先頭に出す。押すと内訳
 
 import { useState } from 'react'
-import { getGaugeCheatName } from '@/lib/calories'
-import {
-  EXERCISE_EMOJI,
-  EXERCISE_LABEL,
-  MEAL_CHOICE_EMOJI,
-  MEAL_CHOICE_LABELS,
-  POINT_LABEL,
-  WANT_KIND_LABELS,
-  type WeekSummary,
-} from '@/types'
+import { getCheatEmoji, getCheatName } from '@/lib/calories'
+import { CHEAT_PLACE_LABELS, EXERCISE_EMOJI, EXERCISE_LABEL, MEAL_CHOICE_EMOJI, MEAL_CHOICE_LABELS, type WeekSummary } from '@/types'
 
-const shortDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
+const dayLabel = (date: string) => `${Number(date.slice(8, 10))}日`
 
-export function WeekLine({
-  summary,
-  label,
-  onPace = false,
-  onOpenLog,
-}: {
-  summary: WeekSummary
-  label: string
-  onPace?: boolean // 「 ・ 順調です」を足す（振り返り文の日は false を渡す）
-  onOpenLog: () => void // 「記録を見る・直す」（/log）
-}) {
+export function WeekLine({ summary, label }: { summary: WeekSummary; label: string }) {
   const [open, setOpen] = useState(false)
-  const { earned, cheats, frequencyCheats } = summary
-  const cheatCount = cheats.length + frequencyCheats.length
+  const { earned, cheats } = summary
+  const sameMonth = summary.from.slice(0, 7) === summary.to.slice(0, 7)
+  const range = `${dayLabel(summary.from)}〜${sameMonth ? dayLabel(summary.to) : `${Number(summary.to.slice(5, 7))}月${dayLabel(summary.to)}`}`
 
   return (
-    <div className="px-1 mt-2">
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="w-full text-left">
-        <p className="text-stone-400 text-xs flex justify-between">
-          <span>
-            {label}
-            {onPace && <span className="text-amber-400"> ・ 順調です</span>}
-          </span>
-          <span className="text-stone-600 shrink-0 ml-2">{open ? '▴' : '▾'}</span>
-        </p>
-        {open && (
-          <div className="mt-1.5 text-xs text-stone-300 space-y-1">
-            <p className="text-stone-500">
-              今週貯まった{POINT_LABEL} +{earned.totalPt}pt（{shortDate(summary.from)}〜{shortDate(summary.to)}）
-            </p>
-            <p>
-              {MEAL_CHOICE_EMOJI.light}
-              {MEAL_CHOICE_LABELS.light}
-              {earned.tamemeshiCount}回 +{earned.tamemeshiPt}pt
-              <span className="text-stone-600"> ・ </span>
-              {EXERCISE_EMOJI}
-              {EXERCISE_LABEL} +{earned.exercisePt}pt
-            </p>
-            {cheatCount > 0 ? (
-              <div>
-                <p className="text-stone-400">今週食べたチート</p>
-                <ul className="mt-0.5 space-y-0.5">
-                  {cheats.map((e, i) => (
-                    <li key={i}>
-                      {e.mode === 'dated' && <span className="text-stone-500 mr-1.5">{shortDate(e.date)}</span>}
-                      {getGaugeCheatName(e)}
-                    </li>
-                  ))}
-                  {frequencyCheats.map((e) => (
-                    <li key={e.row.id}>
-                      <span className="text-stone-500 mr-1.5">週{e.timesPerWeek}回</span>
-                      {e.row.label || WANT_KIND_LABELS[e.row.kind]}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="text-stone-400">今週のチートはまだ。食べたいものを決めておこう</p>
-            )}
-          </div>
-        )}
-      </button>
+    <button
+      type="button"
+      onClick={() => setOpen((v) => !v)}
+      aria-expanded={open}
+      className="w-full text-left bg-stone-900 rounded-2xl px-4 py-3"
+    >
+      <p className="text-stone-200 text-sm flex justify-between">
+        <span>{label}</span>
+        <span className="text-stone-600 shrink-0 ml-2">{open ? '▴' : '▾'}</span>
+      </p>
       {open && (
-        <button type="button" onClick={onOpenLog} className="text-amber-400 text-xs mt-2">
-          記録を見る・直す
-        </button>
+        <div className="mt-2 text-xs text-stone-300 space-y-1.5">
+          <p className="text-stone-500">今週（{range}）</p>
+          <p>
+            {MEAL_CHOICE_EMOJI.light} {MEAL_CHOICE_LABELS.light}
+            {earned.tamemeshiCount}回 {earned.tamemeshiPt.toLocaleString('ja-JP')}kcal
+            <span className="text-stone-600"> ・ </span>
+            {EXERCISE_EMOJI} {EXERCISE_LABEL} {earned.exercisePt.toLocaleString('ja-JP')}kcal
+          </p>
+          {cheats.length > 0 ? (
+            <div>
+              <p className="text-stone-400">今週食べたチート {summary.cheatKcal.toLocaleString('ja-JP')}kcal</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {cheats.map((c) => (
+                  <li key={c.key}>
+                    <span className="text-stone-500 mr-1.5">
+                      {dayLabel(c.date)} {CHEAT_PLACE_LABELS[c.place]}
+                    </span>
+                    {getCheatEmoji(c)} {c.kind === 'hearty' ? MEAL_CHOICE_LABELS.hearty : getCheatName(c)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="text-stone-400">今週のチートはまだです</p>
+          )}
+        </div>
       )}
-    </div>
+    </button>
   )
 }

@@ -42,9 +42,9 @@ export const MEAL_RECORD_DELTA = {
   hearty: 300, // がっつり
 } as const
 
-// ためメシ1回で貯まるpt（12-2）
+// メシため1回で貯まる kcal（12-2・16章。1pt = 1kcal）
 export const TAMEMESHI_PT = -MEAL_RECORD_DELTA.light
-// がっつり1回をチートとして目標に足すpt（12-2）
+// 品を選ばなかった🔥チート1回で数える kcal（12-2・16章）
 export const HEARTY_CHEAT_PT = MEAL_RECORD_DELTA.hearty
 
 // 欲望のコスト
@@ -55,8 +55,6 @@ export const WANT_COSTS: Record<WantKind, number> = {
   other: 300, // その他（中身を選んだチートは total_kcal を使うので、ふつうは使われない）
 }
 
-// チーぽ（1pt = 1kcal。14.1）
-export const KCAL_PER_POINT = 1
 export const EXERCISE_POINTS = {
   walking_30min: 150, // ウォーキング30分
   weights_60min: 300, // 筋トレ60分
@@ -107,14 +105,6 @@ export const WEEK_EARNED_EQUIVALENTS = [
   { pt: 1800, label: '飲み会1回', emoji: '🍻' },
 ] as const
 
-// ゲージのアイコン：前のアイコンとの間がこれ未満（ゲージの長さに対する割合）なら1つにまとめる
-export const GAUGE_MARKER_MIN_GAP = 0.08
-// ゲージのアイコン（15.4）：まとめたあとがこれより多いときは、0kcal化済みの位置に1つだけ出す
-export const GAUGE_MARKER_MAX = 5
-
-// ごほうび（14.2）：これ未満のときは「いまなら {品名} までいけます」を出さない
-export const REWARD_MIN_KCAL = 150
-
 // ログ（14.3）：一覧に出す日数（今日を含む）
 export const LOG_DAYS = 14
 
@@ -130,3 +120,12 @@ export const WEIGHT_REASSURE_TOAST_MS = 4000
 // 3週続けて増えているとき（15.3）：今日・7日前・14日前の前週比が、どれもこれ以上の増（四捨五入して0.1kg単位）
 export const WEIGHT_RISING_WEEKS = 3
 export const WEIGHT_RISING_MIN_KG = 0.1
+
+// ◯月のチート（16章）
+// 持ち越し：前月末のまだの分は、翌月のこの日まで（1日目から数えて）のメシため・うごためで当てる
+export const CARRYOVER_DAYS = 7
+// カード A の絵文字：まとめたあとがこれ以上なら、いちばん多い絵文字 × 件数の1つだけ出す
+export const PENDING_EMOJI_MAX_GROUPS = 6
+// チートを足す画面の「よく食べるもの」：直近この日数に記録した回数の多い順で、この数まで
+export const FREQUENT_ITEM_DAYS = 60
+export const FREQUENT_ITEM_MAX = 6

@@ -81,7 +81,7 @@ export function MealExamplesSheet({ target, onClose }: { target: MealSlotTarget;
         </div>
         <ExampleList title="目安くらいの例" items={normal} listKey="normal" openKey={openKey} onToggle={toggle} />
         <ExampleList
-          title={`がっつりの例（${heartyMinKcal}kcal〜）`}
+          title={`チートの例（${heartyMinKcal}kcal〜）`}
           items={hearty}
           listKey="hearty"
           openKey={openKey}

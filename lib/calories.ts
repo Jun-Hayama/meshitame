@@ -14,8 +14,6 @@ import {
   CheatItemSelection,
   WantKind,
   ExerciseType,
-  MonthCheatEntry,
-  MeshipoGauge,
   WeightLog,
   WeightAverage,
   WeekOverWeek,
@@ -30,15 +28,14 @@ import {
   MilestoneKind,
   ReducePace,
   HeartyCheatEntry,
-  GaugeCheatEntry,
   EarnedBreakdown,
   WeekSummary,
-  DatedCheatEntry,
-  ZeroCalEntry,
-  ZeroCalStatus,
-  ZeroCalStage,
-  GaugeMarker,
-  RewardPick,
+  CheatPlace,
+  MonthCheat,
+  Carryover,
+  CheatLedgerEntry,
+  PlannedCheat,
+  MonthCheatStatus,
   LogDay,
   LogEntry,
   LogFilter,
@@ -56,6 +53,8 @@ import {
   MEAL_CHOICE_EMOJI,
   MEAL_CHOICE_LABELS,
   EXERCISE_TYPE_LABELS,
+  EXERCISE_EMOJI,
+  EXERCISE_LABEL,
 } from '@/types'
 import {
   KCAL_PER_KG,
@@ -83,17 +82,17 @@ import {
   CHART_PERIOD_DAYS,
   CHART_Y_PADDING_KG,
   HEALTH_MILESTONES,
-  GAUGE_MARKER_MIN_GAP,
-  GAUGE_MARKER_MAX,
   WEIGHT_REASSURE_DIFF_KG,
   WEIGHT_RISING_WEEKS,
   WEIGHT_RISING_MIN_KG,
-  REWARD_MIN_KCAL,
   LOG_DAYS,
   CHART_WEIGHT_HALF_RANGE_KG,
   CHART_WEIGHT_EXPAND_PAD_KG,
+  CARRYOVER_DAYS,
+  PENDING_EMOJI_MAX_GROUPS,
+  FREQUENT_ITEM_DAYS,
+  FREQUENT_ITEM_MAX,
 } from '@/lib/calorieConstants'
-import { REWARD_ITEMS, type RewardItem } from '@/lib/rewardItems'
 import { CHEAT_GENRE_MAP, type CheatGenre, type CheatItem } from '@/lib/cheatItems'
 import {
   MEAL_EXAMPLES,
@@ -643,18 +642,13 @@ export function sumCheatItemsKcal(items: Pick<CheatItemSelection, 'kcal' | 'qty'
   return items.reduce((sum, i) => sum + i.kcal * i.qty, 0)
 }
 
-// 置き換え：合計 − その食事の目安（下回るときは0。チートでptは増えない）/ 上乗せ：合計
+// 食事のチート（replace）：合計 − その食事の目安（下回るときは0）/ 食事のほかに（addon）：合計そのまま
 export function calcCheatCost(cheatType: CheatType, totalKcal: number, slotTargetKcal: number): number {
   return cheatType === 'replace' ? Math.max(0, totalKcal - slotTargetKcal) : totalKcal
 }
 
 function genreDef(genre: string) {
   return CHEAT_GENRE_MAP[genre as CheatGenre] ?? null
-}
-
-// 初期タイプ = 最初に選んだアイテムのジャンルのタイプ
-export function getDefaultCheatType(items: Pick<CheatItemSelection, 'genre'>[]): CheatType {
-  return (items.length > 0 && genreDef(items[0].genre)?.defaultType) || 'replace'
 }
 
 // 既存の kind 列に入れる値（最初のアイテムのジャンルから）
@@ -667,17 +661,8 @@ export function buildCheatLabel(items: Pick<CheatItemSelection, 'name' | 'qty'>[
   return items.map((i) => (i.qty > 1 ? `${i.name}×${i.qty}` : i.name)).join('＋')
 }
 
-// 「このチートは ◯pt ＝ メシため◯回 or ウォーキング◯分」
-export function convertCheatCost(costPt: number): { tamemeshi: number; walkingMinutes: number } {
-  const pt = Math.max(0, costPt)
-  return {
-    tamemeshi: Math.ceil(pt / TAMEMESHI_PT),
-    walkingMinutes: Math.ceil(pt / EXERCISE_PT_PER_MIN.walking),
-  }
-}
-
 // 登録済みチート1回分のコスト。中身を選んでいない行は WANT_COSTS をデフォルトに使う
-// 置き換えの食事が未指定なら夜として扱う
+// 食事のチートの食事が未指定なら夜として扱う
 export function getMonthlyWantRowCost(
   row: Pick<MonthlyWantRow, 'kind' | 'cheat_type' | 'replace_slot' | 'total_kcal'>,
   slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
@@ -706,72 +691,46 @@ export function sortCheatItemsByUsage(
     .map((x) => x.item)
 }
 
-// --- 10-4. ゲージは「月で1本」 ---
+// --- 16. v2.6 ◯月のチート：どこから足したかで数え方を決める ---
 
 function monthPrefix(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, '0')}`
 }
 
-// 頻度ベース（週◯回）がその月に入る回数 = 週の回数 × 月の日数 ÷ 7 を四捨五入
-export function countFrequencyInMonth(timesPerWeek: number, year: number, month: number): number {
-  return Math.round((timesPerWeek * getDaysInMonth(year, month)) / 7)
-}
-
-// その月のチート一覧。日付指定は日付順、その後ろに頻度ベース。今日より前の日付指定は済み
-export function expandCheatsForMonth(
-  rows: MonthlyWantRow[],
-  year: number,
-  month: number,
-  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[],
-  today: string // YYYY-MM-DD（日本時間）
-): MonthCheatEntry[] {
+// その月の初日・末日
+export function getMonthDateRange(year: number, month: number): { from: string; to: string } {
   const prefix = monthPrefix(year, month)
-  const active = rows.filter((r) => r.is_active !== false)
-
-  const dated: MonthCheatEntry[] = active
-    .filter((r) => r.scheduled_date != null && r.scheduled_date.startsWith(prefix))
-    .sort((a, b) => (a.scheduled_date as string).localeCompare(b.scheduled_date as string))
-    .map((row) => ({
-      mode: 'dated',
-      row,
-      date: row.scheduled_date as string,
-      costPt: getMonthlyWantRowCost(row, slotTargets),
-      done: (row.scheduled_date as string) < today,
-    }))
-
-  const frequency: MonthCheatEntry[] = active
-    .filter((r) => r.scheduled_date == null && (r.times_per_week ?? 0) > 0)
-    .map((row) => {
-      const timesPerWeek = row.times_per_week as number
-      const timesInMonth = countFrequencyInMonth(timesPerWeek, year, month)
-      const costPerTimePt = getMonthlyWantRowCost(row, slotTargets)
-      return { mode: 'frequency', row, timesPerWeek, timesInMonth, costPerTimePt, costPt: costPerTimePt * timesInMonth }
-    })
-
-  return [...dated, ...frequency]
+  return { from: `${prefix}-01`, to: `${prefix}-${String(getDaysInMonth(year, month)).padStart(2, '0')}` }
 }
 
-export function sumMonthCheatCosts(entries: Pick<MonthCheatEntry, 'costPt'>[]): number {
-  return entries.reduce((sum, e) => sum + e.costPt, 0)
+// 足した場所：食事のチート（cheat_type = replace）は朝・昼・夜（未指定は夜）。それ以外は食事のほかに
+export function getCheatPlace(row: Pick<MonthlyWantRow, 'cheat_type' | 'replace_slot'>): CheatPlace {
+  return row.cheat_type === 'replace' ? (row.replace_slot ?? 'dinner') : 'extra'
 }
 
-// 置き換えのチートが入っている「日付:食事」（その食事の記録はptに入れない）
+// 同じ日の並び：朝・昼・夜・食事のほかに
+const PLACE_ORDER: CheatPlace[] = ['morning', 'lunch', 'dinner', 'extra']
+
+// 日付のあるチート（頻度ベース以外）
+function isDatedCheat(r: Pick<MonthlyWantRow, 'is_active' | 'scheduled_date'>): boolean {
+  return r.is_active !== false && r.scheduled_date != null
+}
+
+// 食事のチートが入っている「日付:食事」（その食事の🔥チート300・メシためは数えない）
 // 日付のない頻度ベースは対象外
 export function getReplacedMealKeys(
   rows: Pick<MonthlyWantRow, 'scheduled_date' | 'cheat_type' | 'replace_slot' | 'is_active'>[]
 ): Set<string> {
   const keys = new Set<string>()
   for (const r of rows) {
-    if (r.is_active === false || !r.scheduled_date || r.cheat_type !== 'replace') continue
+    if (!isDatedCheat(r) || r.cheat_type !== 'replace') continue
     keys.add(`${r.scheduled_date}:${r.replace_slot ?? 'dinner'}`)
   }
   return keys
 }
 
-// --- 12-2. がっつりはチートとして目標に足す ---
-
-// がっつりの記録をチートの行にする（DBには作らない）。日付・食事の順
-// 置き換えのチートが入っている食事（★チート表示）のがっつりは数えない（置き換えのコストと二重にしない）
+// 品を選ばなかった🔥チート（meal_logs の hearty）。日付・食事の順
+// 品つきの食事のチートがある食事は数えない（品の分と二重にしない）
 export function expandHeartyCheats(
   mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[],
   from: string,
@@ -790,28 +749,48 @@ export function expandHeartyCheats(
     .map((l) => ({ mode: 'hearty', date: l.log_date, slot: l.slot, costPt: HEARTY_CHEAT_PT }))
 }
 
-// その月の初日・末日
-export function getMonthDateRange(year: number, month: number): { from: string; to: string } {
-  const prefix = monthPrefix(year, month)
-  return { from: `${prefix}-01`, to: `${prefix}-${String(getDaysInMonth(year, month)).padStart(2, '0')}` }
+function cheatFromRow(row: MonthlyWantRow, slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]): MonthCheat {
+  return {
+    kind: 'cheat',
+    key: row.id,
+    date: row.scheduled_date as string,
+    place: getCheatPlace(row),
+    costKcal: getMonthlyWantRowCost(row, slotTargets),
+    row,
+  }
 }
 
-// ゲージの目標に入るチート：登録したチート ＋ その月のがっつり
-export function buildGaugeCheats(
-  cheats: MonthCheatEntry[],
-  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[],
-  year: number,
-  month: number,
-  replacedMealKeys?: Set<string>
-): GaugeCheatEntry[] {
-  const { from, to } = getMonthDateRange(year, month)
-  return [...cheats, ...expandHeartyCheats(mealLogs, from, to, replacedMealKeys)]
+function cheatFromHearty(e: HeartyCheatEntry): MonthCheat {
+  return { kind: 'hearty', key: `hearty:${e.date}:${e.slot}`, date: e.date, place: e.slot, costKcal: e.costPt, row: null }
 }
 
-// --- 12-2. 貯まったpt = ためメシ × 150 ＋ 運動pt ---
-// いつもの・記録なしは0pt。がっつりは引かない（目標に足す）
-// 置き換えたチートがある食事の記録は数えない
+// なかったことにする順番：日付の早い順、同じ日は朝・昼・夜・食事のほかに、さらに登録順
+function compareCheats(a: MonthCheat, b: MonthCheat): number {
+  return (
+    a.date.localeCompare(b.date) ||
+    PLACE_ORDER.indexOf(a.place) - PLACE_ORDER.indexOf(b.place) ||
+    (a.row?.created_at ?? '').localeCompare(b.row?.created_at ?? '')
+  )
+}
 
+// from〜to のチート：日付のあるチート ＋ 品を選ばなかった🔥チート × 300。頻度ベースは数えない
+export function listCheatsInRange(input: {
+  wants: MonthlyWantRow[]
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+  from: string
+  to: string
+}): MonthCheat[] {
+  const { wants, mealLogs, slotTargets, from, to } = input
+  const dated = wants
+    .filter((r) => isDatedCheat(r) && (r.scheduled_date as string) >= from && (r.scheduled_date as string) <= to)
+    .map((r) => cheatFromRow(r, slotTargets))
+  const hearty = expandHeartyCheats(mealLogs, from, to, getReplacedMealKeys(wants)).map(cheatFromHearty)
+  return [...dated, ...hearty].sort(compareCheats)
+}
+
+// 貯めた分 = メシため × 150 ＋ うごための kcal。いつもの・記録なし・🔥チートは0
+// 食事のチートがある食事の記録は数えない
 export function calcEarnedBreakdown(input: {
   from: string
   to: string
@@ -829,7 +808,7 @@ export function calcEarnedBreakdown(input: {
   return { tamemeshiCount, tamemeshiPt, exercisePt, totalPt: tamemeshiPt + exercisePt }
 }
 
-// その月の今日までの内訳（どの日の分も同じ月のプールに入る）
+// その月の今日までの貯めた分（どの日の分も同じ月に入る）
 export function calcMonthEarnedBreakdown(input: {
   year: number
   month: number
@@ -846,47 +825,232 @@ export function calcMonthEarnedPt(input: Parameters<typeof calcMonthEarnedBreakd
   return calcMonthEarnedBreakdown(input).totalPt
 }
 
-export function calcMeshipoGauge(input: {
-  targetPt: number
-  earnedPt: number
-  dayOfMonth: number // 今日が何日目か（今日を含む）
-  daysInMonth: number
-}): MeshipoGauge {
-  const { targetPt, earnedPt, dayOfMonth, daysInMonth } = input
-  const pacePt = Math.round((targetPt * dayOfMonth) / daysInMonth)
-  const behindPt = Math.max(0, pacePt - earnedPt)
+type MonthCheatInput = {
+  year: number
+  month: number
+  today: string // YYYY-MM-DD（日本時間）
+  wants: MonthlyWantRow[]
+  mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[] // 前月の初日から読む（持ち越しのため）
+  exerciseLogs: { log_date: string; points: number }[]
+  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
+}
+
+// 持ち越し：前月末のまだの分（前月の持ち越しは含めない）。翌月7日までのメシため・うごためで当てる
+// 7日が終わったら、7日までに当てた分だけを残し、残りは消す
+export function calcCarryover(input: MonthCheatInput): Carryover {
+  const { year, month, today, wants, mealLogs, exerciseLogs, slotTargets } = input
+  const prevYear = month === 1 ? year - 1 : year
+  const prevMonth = month === 1 ? 12 : month - 1
+  const prev = getMonthDateRange(prevYear, prevMonth)
+  const replacedMealKeys = getReplacedMealKeys(wants)
+  const prevEaten = listCheatsInRange({ wants, mealLogs, slotTargets, ...prev }).reduce((s, c) => s + c.costKcal, 0)
+  const prevSaved = calcEarnedBreakdown({ ...prev, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
+  const fullKcal = Math.max(0, prevEaten - prevSaved)
+
+  const { from } = getMonthDateRange(year, month)
+  const deadline = addDaysToDateStr(from, CARRYOVER_DAYS - 1)
+  const open = today <= deadline
+  if (open || fullKcal === 0) return { fullKcal, kcal: fullKcal, open }
+  const savedByDeadline = calcEarnedBreakdown({ from, to: deadline, mealLogs, exerciseLogs, replacedMealKeys }).totalPt
+  return { fullKcal, kcal: Math.min(fullKcal, savedByDeadline), open }
+}
+
+// ◯月のチート（16章）。持ち越し → 日付順に貯めた分を当て、全額に届いたものを「なかったことに」
+export function calcMonthCheatStatus(input: MonthCheatInput): MonthCheatStatus {
+  const { year, month, today, wants, mealLogs, exerciseLogs, slotTargets } = input
+  const { from, to } = getMonthDateRange(year, month)
+  const until = to < today ? to : today
+  const carry = calcCarryover(input)
+  const replacedMealKeys = getReplacedMealKeys(wants)
+
+  const cheats = listCheatsInRange({ wants, mealLogs, slotTargets, from, to: until })
+  const carryEntry: MonthCheat = { kind: 'carryover', key: 'carryover', date: from, place: 'morning', costKcal: carry.kcal, row: null }
+  const ordered = carry.kcal > 0 ? [carryEntry, ...cheats] : cheats
+
+  const earned = calcEarnedBreakdown({ from, to: until, mealLogs, exerciseLogs, replacedMealKeys })
+  const savedKcal = earned.totalPt
+  let cumulative = 0
+  const entries: CheatLedgerEntry[] = ordered.map((cheat) => {
+    cumulative += cheat.costKcal
+    return { cheat, cumulativeKcal: cumulative, cleared: cumulative <= savedKcal }
+  })
+  const eatenKcal = cumulative
+  const pendingKcal = Math.max(0, eatenKcal - savedKcal)
+  const spareKcal = Math.max(0, savedKcal - eatenKcal)
+
+  // 予定：今月の、今日より後のチートに余りを当てていく（翌月の予定は対象にしない）
+  let planCumulative = 0
+  const planned: PlannedCheat[] =
+    until >= to
+      ? []
+      : listCheatsInRange({ wants, mealLogs: [], slotTargets, from: addDaysToDateStr(until, 1), to }).map((cheat) => {
+          planCumulative += cheat.costKcal
+          const shortKcal = Math.max(0, pendingKcal + planCumulative - spareKcal)
+          return { cheat, ready: shortKcal === 0, shortKcal, tamemeshiNeeded: Math.ceil(shortKcal / TAMEMESHI_PT) }
+        })
+
   return {
-    targetPt,
-    earnedPt,
-    pacePt,
-    onPace: behindPt === 0,
-    behindPt,
-    catchUpWalkingMinutes: Math.ceil(behindPt / EXERCISE_PT_PER_MIN.walking),
-    extraPt: Math.max(0, earnedPt - targetPt),
-    tamemeshiNeeded: Math.max(0, Math.ceil((targetPt - earnedPt) / TAMEMESHI_PT)),
-    fillRatio: targetPt > 0 ? Math.min(1, Math.max(0, earnedPt / targetPt)) : 1,
-    paceRatio: Math.min(1, dayOfMonth / daysInMonth),
+    entries,
+    earned,
+    carryoverKcal: carry.kcal,
+    carryoverFullKcal: carry.fullKcal,
+    carryoverOpen: carry.open && carry.fullKcal > 0,
+    eatenKcal,
+    savedKcal,
+    clearedKcal: Math.min(savedKcal, eatenKcal),
+    pendingKcal,
+    spareKcal,
+    tamemeshiNeeded: Math.ceil(pendingKcal / TAMEMESHI_PT),
+    stage: pendingKcal > 0 ? 'pending' : spareKcal > 0 ? 'spare' : 'empty',
+    onTrack: eatenKcal >= 1 && pendingKcal === 0,
+    planned,
   }
 }
 
-// --- 15.1. 順調（貯まったpt ≧ ペースの目印、かつ 貯まったpt > 0）。目標0の月は貯まったpt > 0 なら順調 ---
-
-export function isOnPace(input: {
-  targetPt: number
-  earnedPt: number
-  dayOfMonth: number // 今日が何日目か（今日を含む）
-  daysInMonth: number
-}): boolean {
-  return input.earnedPt > 0 && calcMeshipoGauge(input).onPace
+// 記録の前後を比べて、新たになかったことになったチート（複数なら最後の1件）。無ければ null
+export function detectNewlyCleared(before: MonthCheatStatus, after: MonthCheatStatus): MonthCheat | null {
+  const cleared = new Set(before.entries.filter((e) => e.cleared).map((e) => e.cheat.key))
+  const added = after.entries.filter((e) => e.cleared && !cleared.has(e.cheat.key))
+  return added.length > 0 ? added[added.length - 1].cheat : null
 }
 
-// 今日（日本時間 YYYY-MM-DD）の月で判定する
-export function isOnPaceToday(today: string, targetPt: number, earnedPt: number): boolean {
-  const { to } = getMonthDateRange(Number(today.slice(0, 4)), Number(today.slice(5, 7)))
-  return isOnPace({ targetPt, earnedPt, dayOfMonth: Number(today.slice(8, 10)), daysInMonth: Number(to.slice(8, 10)) })
+// --- 16. 名前・絵文字・文言 ---
+
+const formatKcal = (kcal: number) => kcal.toLocaleString('ja-JP')
+const dayOf = (date: string) => Number(date.slice(8, 10))
+
+// 「9日の夜のチート」（品を選ばなかった🔥チート）
+export function heartyCheatLabel(date: string, slot: MealSlot): string {
+  return `${dayOf(date)}日の${SLOT_LABELS[slot]}のチート`
 }
 
-// --- 12-5. 週の振り返り（月曜〜日曜・日本時間。月をまたいでも日付で集計する） ---
+// トースト・ログに出すチートの名前
+export function getCheatName(cheat: MonthCheat): string {
+  if (cheat.kind === 'carryover') return '先月の分'
+  if (cheat.kind === 'hearty') return heartyCheatLabel(cheat.date, cheat.place as MealSlot)
+  const row = cheat.row as MonthlyWantRow
+  return row.label || WANT_KIND_LABELS[row.kind]
+}
+
+// チートの行の絵文字：アイテム表のジャンルの絵文字（中身なしは kind の絵文字）
+export function getCheatRowEmoji(row: Pick<MonthlyWantRow, 'items' | 'kind'>): string {
+  const genre = row.items?.[0]?.genre
+  return (genre && genreDef(genre)?.emoji) || WANT_KIND_EMOJI[row.kind]
+}
+
+// 品の絵文字（「🔥チート 🍜🍺」）。同じ絵文字は1つにまとめる
+export function getCheatItemEmojis(rows: Pick<MonthlyWantRow, 'items' | 'kind'>[]): string {
+  const emojis: string[] = []
+  for (const row of rows) {
+    const list = row.items?.length ? row.items.map((i) => genreDef(i.genre)?.emoji ?? WANT_KIND_EMOJI[row.kind]) : [getCheatRowEmoji(row)]
+    for (const e of list) if (!emojis.includes(e)) emojis.push(e)
+  }
+  return emojis.join('')
+}
+
+export function getCheatEmoji(cheat: MonthCheat): string {
+  if (cheat.kind === 'hearty') return MEAL_CHOICE_EMOJI.hearty
+  if (cheat.kind === 'carryover') return ''
+  return getCheatRowEmoji(cheat.row as MonthlyWantRow)
+}
+
+// カード A の1行目：まだの分になっているチートの絵文字（同じ絵文字は ×n にまとめる）
+// まとめたあとが6個以上なら、いちばん多い絵文字 × 件数の1つだけ（同じ数なら先に出てきたもの）
+export function buildPendingEmojis(status: MonthCheatStatus): { emoji: string; count: number }[] {
+  const groups: { emoji: string; count: number }[] = []
+  for (const e of status.entries) {
+    if (e.cleared || e.cheat.kind === 'carryover') continue
+    const emoji = getCheatEmoji(e.cheat)
+    const found = groups.find((g) => g.emoji === emoji)
+    if (found) found.count += 1
+    else groups.push({ emoji, count: 1 })
+  }
+  if (groups.length < PENDING_EMOJI_MAX_GROUPS) return groups
+  const top = groups.reduce((best, g) => (g.count > best.count ? g : best), groups[0])
+  return [{ emoji: top.emoji, count: groups.reduce((s, g) => s + g.count, 0) }]
+}
+
+// まだの分になっている持ち越しがあるか（カード A の「先月の分」）
+export function hasPendingCarryover(status: MonthCheatStatus): boolean {
+  return status.entries.some((e) => e.cheat.kind === 'carryover' && !e.cleared)
+}
+
+// 今月食べたチートが1つ以上あるか（持ち越しは含めない。カード B の1行目）
+export function hasMonthCheats(status: MonthCheatStatus): boolean {
+  return status.entries.some((e) => e.cheat.kind !== 'carryover')
+}
+
+// カードの棒：食べた分のうち、なかったことにできた割合
+export function calcClearedRatio(status: MonthCheatStatus): number {
+  return status.eatenKcal > 0 ? Math.min(1, status.clearedKcal / status.eatenKcal) : 0
+}
+
+export const CHEAT_CARD_INTRO = '飲みたい日は飲む。そのぶんは、メシためでなかったことに。'
+export const CHEAT_CARD_ON_TRACK = '好きなものを食べながら、ちゃんと痩せてます'
+
+export function describePendingLine(status: MonthCheatStatus): string {
+  return `メシためあと${status.tamemeshiNeeded}回で、なかったことにできます`
+}
+
+export function describeSpareLine(status: MonthCheatStatus): string {
+  return `チートにあと ${formatKcal(status.spareKcal)}kcal 使えます`
+}
+
+// 「28日の焼肉は、もう準備OK」／「28日の焼肉まで、メシためあと3回」
+export function describePlannedLine(plan: PlannedCheat): string {
+  const name = `${dayOf(plan.cheat.date)}日の${getCheatName(plan.cheat)}`
+  return plan.ready ? `${name}は、もう準備OK` : `${name}まで、メシためあと${plan.tamemeshiNeeded}回`
+}
+
+// 貯めた kcal を身近な品で言い換える（「ビール1本」）。いちばん小さい品に届かないときは null
+export function pickSavedEquivalent(kcal: number): (typeof WEEK_EARNED_EQUIVALENTS)[number] | null {
+  return [...WEEK_EARNED_EQUIVALENTS].reverse().find((e) => e.pt <= kcal) ?? null
+}
+
+// 「🐷 メシため。ビール1本ぶんです」
+export function describeMeshitameToast(): string {
+  const eq = pickSavedEquivalent(TAMEMESHI_PT)
+  return `${MEAL_CHOICE_EMOJI.light} ${MEAL_CHOICE_LABELS.light}。${eq ? `${eq.label}ぶんです` : ''}`
+}
+
+// 「🏃 うごため 30分。ビール1本ぶんです」（届かないときは「🏃 うごため 10分。」）
+export function describeExerciseToast(log: Pick<ExerciseLogRow, 'exercise_type' | 'minutes' | 'steps' | 'points'>): string {
+  const amount =
+    log.exercise_type === 'steps' ? `${(log.steps ?? 0).toLocaleString('ja-JP')}歩` : `${log.minutes ?? 0}分`
+  const eq = pickSavedEquivalent(log.points)
+  return `${EXERCISE_EMOJI} ${EXERCISE_LABEL} ${amount}。${eq ? `${eq.label}ぶんです` : ''}`
+}
+
+// --- 16. よく食べるもの（直近60日に記録した回数の多い順。頻度ベースで登録済みの品も入れる） ---
+
+export function pickFrequentCheatItems(
+  rows: Pick<MonthlyWantRow, 'items' | 'scheduled_date' | 'times_per_week' | 'is_active'>[],
+  today: string,
+  days = FREQUENT_ITEM_DAYS,
+  limit = FREQUENT_ITEM_MAX
+): Omit<CheatItemSelection, 'qty'>[] {
+  const from = addDaysToDateStr(today, -(days - 1))
+  const counts = new Map<string, { item: Omit<CheatItemSelection, 'qty'>; count: number; order: number }>()
+  let order = 0
+  for (const row of rows) {
+    if (row.is_active === false) continue
+    const inRange = row.scheduled_date != null && row.scheduled_date >= from && row.scheduled_date <= today
+    const frequency = row.scheduled_date == null && (row.times_per_week ?? 0) > 0
+    if (!inRange && !frequency) continue
+    for (const i of row.items ?? []) {
+      const key = `${i.genre}:${i.name}`
+      const found = counts.get(key)
+      if (found) found.count += 1
+      else counts.set(key, { item: { genre: i.genre, name: i.name, kcal: i.kcal }, count: 1, order: order++ })
+    }
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count || a.order - b.order)
+    .slice(0, limit)
+    .map((x) => x.item)
+}
+
+// --- 12-5. 週（月曜〜日曜・日本時間。月をまたいでも日付で集計する） ---
 
 // 0=日 … 6=土
 function weekdayOf(dateStr: string): number {
@@ -900,7 +1064,7 @@ export function getWeekRange(dateStr: string): { from: string; to: string } {
   return { from, to: addDaysToDateStr(from, 6) }
 }
 
-// 振り返りカードを出す週：日曜はその週、月曜は前の週。ほかの曜日は null
+// 振り返りの週：日曜はその週、月曜は前の週。ほかの曜日は null
 export function getReviewWeek(today: string): { from: string; to: string } | null {
   const weekday = weekdayOf(today)
   if (weekday === 0) return getWeekRange(today)
@@ -920,233 +1084,30 @@ export function calcWeekSummary(input: {
   const { from, mealLogs, exerciseLogs, wants, slotTargets, weightLogs } = input
   const sunday = addDaysToDateStr(from, 6)
   const to = input.until && input.until < sunday ? input.until : sunday
-  const active = wants.filter((r) => r.is_active !== false)
-  const replacedMealKeys = getReplacedMealKeys(active)
-
-  const dated: DatedCheatEntry[] = active
-    .filter((r) => r.scheduled_date != null && r.scheduled_date >= from && r.scheduled_date <= to)
-    .sort((a, b) => (a.scheduled_date as string).localeCompare(b.scheduled_date as string))
-    .map((row) => ({
-      mode: 'dated',
-      row,
-      date: row.scheduled_date as string,
-      costPt: getMonthlyWantRowCost(row, slotTargets),
-      done: true,
-    }))
-  const cheats: WeekSummary['cheats'] = [...dated, ...expandHeartyCheats(mealLogs, from, to, replacedMealKeys)].sort(
-    (a, b) => a.date.localeCompare(b.date)
-  )
-  const frequencyCheats = active
-    .filter((r) => r.scheduled_date == null && (r.times_per_week ?? 0) > 0)
-    .map((row) => {
-      const timesPerWeek = row.times_per_week as number
-      return { row, timesPerWeek, costPt: getMonthlyWantRowCost(row, slotTargets) * timesPerWeek }
-    })
-
+  const cheats = listCheatsInRange({ wants, mealLogs, slotTargets, from, to })
   return {
     from,
     to: sunday,
-    earned: calcEarnedBreakdown({ from, to, mealLogs, exerciseLogs, replacedMealKeys }),
+    earned: calcEarnedBreakdown({ from, to, mealLogs, exerciseLogs, replacedMealKeys: getReplacedMealKeys(wants) }),
     cheats,
-    frequencyCheats,
-    cheatPt: cheats.reduce((sum, e) => sum + e.costPt, 0) + frequencyCheats.reduce((sum, e) => sum + e.costPt, 0),
+    cheatKcal: cheats.reduce((sum, c) => sum + c.costKcal, 0),
     weightDiffKg: calcWeekOverWeek(weightLogs, sunday).diffKg,
   }
 }
 
-// 「今週は+600pt！ワイン1本ぶん貯まりました🍷」。0ptのときも責めない
-export function describeWeekEarned(pt: number): string {
-  if (pt <= 0) return '今週はひと休み。来週のメシためでまた貯めていこう'
-  const eq = [...WEEK_EARNED_EQUIVALENTS].reverse().find((e) => e.pt <= pt)
-  if (!eq) return `今週は+${pt}pt！コツコツ貯まっています`
-  return `今週は+${pt}pt！${eq.label}ぶん貯まりました${eq.emoji}`
-}
-
-// --- 13.3・15.4. なかったことに（pt ≒ kcal。貯まったpt = 実質0kcalにできたkcal） ---
-
-const shortDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`
-
-// 「🔥がっつり（11/9 夜）」
-export function heartyCheatLabel(date: string, slot: MealSlot): string {
-  return `${MEAL_CHOICE_EMOJI.hearty}${MEAL_CHOICE_LABELS.hearty}（${shortDate(date)} ${SLOT_LABELS[slot]}）`
-}
-
-// 見出し・トーストに出すチートの名前
-export function getGaugeCheatName(entry: GaugeCheatEntry): string {
-  if (entry.mode === 'hearty') return heartyCheatLabel(entry.date, entry.slot)
-  return entry.row.label || WANT_KIND_LABELS[entry.row.kind]
-}
-
-// ゲージに乗せる絵文字：アイテム表のジャンルの絵文字（がっつりは🔥、中身なしは kind の絵文字）
-export function getGaugeCheatEmoji(entry: GaugeCheatEntry): string {
-  if (entry.mode === 'hearty') return MEAL_CHOICE_EMOJI.hearty
-  const genre = entry.row.items?.[0]?.genre
-  return (genre && genreDef(genre)?.emoji) || WANT_KIND_EMOJI[entry.row.kind]
-}
-
-// 0kcal化の並び順：日付のあるもの（日付指定・がっつり）は日付の早い順（同じ日は朝・昼・夜、さらに登録順）、
-// 日付のないもの（頻度ベース）はその後ろに登録順
-export function orderZeroCalCheats(entries: GaugeCheatEntry[]): GaugeCheatEntry[] {
-  const slotIndex = (e: GaugeCheatEntry) =>
-    SLOT_ORDER.indexOf(e.mode === 'hearty' ? e.slot : (e.row.replace_slot ?? 'dinner'))
-  const createdAt = (e: GaugeCheatEntry) => (e.mode === 'hearty' ? '' : e.row.created_at ?? '')
-  const dated = entries
-    .map((e, index) => ({ e, index }))
-    .filter(({ e }) => e.mode !== 'frequency')
-    .sort((a, b) => {
-      const da = (a.e as Exclude<GaugeCheatEntry, { mode: 'frequency' }>).date
-      const db = (b.e as Exclude<GaugeCheatEntry, { mode: 'frequency' }>).date
-      return (
-        da.localeCompare(db) ||
-        slotIndex(a.e) - slotIndex(b.e) ||
-        createdAt(a.e).localeCompare(createdAt(b.e)) ||
-        a.index - b.index
-      )
-    })
-    .map(({ e }) => e)
-  const undated = entries
-    .map((e, index) => ({ e, index }))
-    .filter(({ e }) => e.mode === 'frequency')
-    .sort((a, b) => createdAt(a.e).localeCompare(createdAt(b.e)) || a.index - b.index)
-    .map(({ e }) => e)
-  return [...dated, ...undated]
-}
-
-// 並べたチートを累計し、累計コスト ≦ 貯まったpt のものを0kcal化済みにする
-export function calcZeroCalStatus(ordered: GaugeCheatEntry[], earnedPt: number): ZeroCalStatus {
-  const earned = Math.max(0, earnedPt)
-  let cumulative = 0
-  const entries: ZeroCalEntry[] = ordered.map((entry) => {
-    cumulative += entry.costPt
-    return { entry, cumulativePt: cumulative, zeroed: cumulative <= earned }
-  })
-  const totalPt = cumulative
-  const nextEntry = entries.find((e) => !e.zeroed) ?? null
-  const remainingPt = nextEntry ? nextEntry.cumulativePt - earned : 0
-  return {
-    entries,
-    totalPt,
-    earnedPt: earned,
-    zeroedPt: Math.min(earned, totalPt),
-    zeroedCount: entries.filter((e) => e.zeroed).length,
-    next: nextEntry
-      ? { entry: nextEntry.entry, remainingPt, tamemeshiNeeded: Math.ceil(remainingPt / TAMEMESHI_PT) }
-      : null,
-    extraPt: nextEntry ? 0 : earned - totalPt,
-    scalePt: Math.max(totalPt, earned),
-  }
-}
-
-// 記録の前後の貯まったptを比べて、新たに0kcal化済みになったチート（複数なら最後の1件）。無ければ null
-export function detectNewlyZeroed(
-  ordered: GaugeCheatEntry[],
-  beforePt: number,
-  afterPt: number
-): GaugeCheatEntry | null {
-  const before = new Set(calcZeroCalStatus(ordered, beforePt).entries.filter((e) => e.zeroed).map((e) => e.entry))
-  const added = calcZeroCalStatus(ordered, afterPt).entries.filter((e) => e.zeroed && !before.has(e.entry))
-  return added.length > 0 ? added[added.length - 1].entry : null
-}
-
-const formatKcal = (kcal: number) => kcal.toLocaleString('ja-JP')
-
-// カードの状態（15.4）：none = チート未登録 / empty = 貯まったpt 0 / partial = 途中 / full = 全部
-export function getZeroCalStage(status: ZeroCalStatus): ZeroCalStage {
-  if (status.entries.length === 0) return 'none'
-  if (status.earnedPt <= 0) return 'empty'
-  return status.earnedPt < status.totalPt ? 'partial' : 'full'
-}
-
-// 見出し（15.4）。チート名は出さず kcal で見せる
-export function describeZeroCalHeadline(status: ZeroCalStatus): string {
-  switch (getZeroCalStage(status)) {
-    case 'none':
-      return '食べたいものを先に決めよう'
-    case 'empty':
-      return `今月のチート ${formatKcal(status.totalPt)}kcal`
-    case 'partial':
-      return `${formatKcal(status.zeroedPt)}kcal、なかったことに。`
-    case 'full':
-      return `${formatKcal(status.zeroedPt)}kcal、ぜんぶなかったことに。`
-  }
-}
-
-// ゲージの下の行（15.4）。全部のとき（ごほうびの行を出す）とチート未登録のときは null
-export function describeZeroCalSubline(status: ZeroCalStatus): string | null {
-  switch (getZeroCalStage(status)) {
-    case 'empty':
-      return `${MEAL_CHOICE_LABELS.light}で、なかったことにしていこう`
-    case 'partial':
-      return `あと ${formatKcal(status.totalPt - status.earnedPt)}kcal`
-    default:
-      return null
-  }
-}
-
-// ゲージのアイコン。位置 = 累計コスト ÷ 目盛りの最大（max(合計, 貯まったpt)。14.2）
-// 前のアイコンとの間が minGap 未満なら1つにまとめる（絵文字は最初の1件）
-// まとめたあとが maxMarkers より多いときは、0kcal化済みの位置に1つだけ（いちばん多い絵文字 ×0kcal化済みの件数。15.4）
-export function buildGaugeMarkers(
-  status: ZeroCalStatus,
-  minGap = GAUGE_MARKER_MIN_GAP,
-  maxMarkers = GAUGE_MARKER_MAX
-): GaugeMarker[] {
-  if (status.totalPt <= 0 || status.scalePt <= 0) return []
-  const markers: GaugeMarker[] = []
-  for (const e of status.entries) {
-    const ratio = e.cumulativePt / status.scalePt
-    const last = markers[markers.length - 1]
-    if (last && ratio - last.ratio < minGap) {
-      last.ratio = ratio
-      last.count += 1
-      last.zeroed = last.zeroed && e.zeroed
-      continue
-    }
-    markers.push({ ratio, emoji: getGaugeCheatEmoji(e.entry), count: 1, zeroed: e.zeroed })
-  }
-  if (markers.length <= maxMarkers) return markers
-
-  const zeroed = status.entries.filter((e) => e.zeroed)
-  if (zeroed.length === 0) return []
-  // いちばん多い絵文字（同じ数なら先に出てきたもの）
-  const counts = new Map<string, number>()
-  for (const e of zeroed) {
-    const emoji = getGaugeCheatEmoji(e.entry)
-    counts.set(emoji, (counts.get(emoji) ?? 0) + 1)
-  }
-  let emoji = ''
-  let best = 0
-  for (const [k, n] of counts) {
-    if (n > best) {
-      emoji = k
-      best = n
-    }
-  }
-  return [{ ratio: status.zeroedPt / status.scalePt, emoji, count: zeroed.length, zeroed: true }]
-}
-
-// --- 14.2. ごほうび（目標を超えて貯めた分。今月限り） ---
-
-export function calcRewardKcal(earnedPt: number, targetPt: number): number {
-  return Math.max(0, earnedPt - targetPt)
-}
-
-// ごほうび以下でいちばん kcal が大きい候補。150kcal未満、または届く候補がなければ null
-export function pickRewardItem(rewardKcal: number, items: RewardItem[] = REWARD_ITEMS): RewardPick | null {
-  if (rewardKcal < REWARD_MIN_KCAL) return null
-  let best: RewardPick | null = null
-  for (const item of items) {
-    const kcal = calcMealExampleKcal(item.items)
-    if (kcal <= rewardKcal && (!best || kcal > best.kcal)) best = { name: item.name, kcal }
-  }
-  return best
+// 「今週は 1,950kcal 貯まりました。飲み会1回ぶんです🍻」。0のときも責めない
+export function describeWeekEarned(kcal: number): string {
+  if (kcal <= 0) return '今週はひと休み。来週またメシためしていきましょう'
+  const eq = pickSavedEquivalent(kcal)
+  const head = `今週は ${formatKcal(kcal)}kcal 貯まりました`
+  return eq ? `${head}。${eq.label}ぶんです${eq.emoji}` : head
 }
 
 // --- 14.3. ログ ---
 
 // 「≒ ビール◯杯ぶん」：生ビール中ジョッキの kcal で割って切り捨て（1杯未満は0 → 画面では出さない）
-export function calcBeerEquivalent(pt: number): number {
-  return Math.max(0, Math.floor(pt / FOOD_ITEM_MAP.draft_beer.kcal))
+export function calcBeerEquivalent(kcal: number): number {
+  return Math.max(0, Math.floor(kcal / FOOD_ITEM_MAP.draft_beer.kcal))
 }
 
 // うごための合計時間（分）。歩数で記録したものは含めない
@@ -1166,37 +1127,47 @@ export function formatExerciseLog(log: Pick<ExerciseLogRow, 'exercise_type' | 'm
   return `${EXERCISE_TYPE_LABELS[log.exercise_type]}${log.minutes ?? 0}分`
 }
 
-// 過去14日分（今日を含む）の一覧。新しい日が上。メシため（light）とうごためだけ。記録がない日は出さない
+// 過去14日分（今日を含む）の一覧。新しい日が上。メシため（light）・チート・うごため。記録がない日は出さない
 export function buildLogDays(input: {
   today: string
   mealLogs: MealLogRow[]
   exerciseLogs: ExerciseLogRow[]
+  wants?: MonthlyWantRow[]
+  slotTargets?: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
   filter: LogFilter
-  replacedMealKeys?: Set<string>
 }): LogDay[] {
-  const { today, mealLogs, exerciseLogs, filter, replacedMealKeys } = input
+  const { today, mealLogs, exerciseLogs, filter } = input
+  const wants = input.wants ?? []
+  const replacedMealKeys = getReplacedMealKeys(wants)
   const from = addDaysToDateStr(today, -(LOG_DAYS - 1))
+  const cheats =
+    filter === 'all' || filter === 'cheat'
+      ? listCheatsInRange({ wants, mealLogs, slotTargets: input.slotTargets ?? [], from, to: today })
+      : []
   const days: LogDay[] = []
   for (let d = today; d >= from; d = addDaysToDateStr(d, -1)) {
     const meals: LogEntry[] =
-      filter === 'exercise'
-        ? []
-        : mealLogs
-            .filter((l) => l.log_date === d && l.choice === 'light')
-            .sort((a, b) => SLOT_ORDER.indexOf(a.slot) - SLOT_ORDER.indexOf(b.slot))
-            .map((log) => ({
-              kind: 'meal',
-              log,
-              pt: replacedMealKeys?.has(`${log.log_date}:${log.slot}`) ? 0 : TAMEMESHI_PT,
-            }))
+      filter === 'all' || filter === 'meal'
+        ? mealLogs
+            .filter((l) => l.log_date === d && l.choice === 'light' && !replacedMealKeys.has(`${l.log_date}:${l.slot}`))
+            .map((log) => ({ kind: 'meal', log, kcal: TAMEMESHI_PT }))
+        : []
+    const dayCheats: LogEntry[] = cheats
+      .filter((c) => c.date === d)
+      .map((cheat) => ({ kind: 'cheat', cheat, kcal: cheat.costKcal }))
+    // 朝・昼・夜・食事のほかにの順（同じ食事はメシため → チート）
+    const placed = [...meals, ...dayCheats].sort((a, b) => {
+      const place = (e: LogEntry) => (e.kind === 'meal' ? e.log.slot : e.kind === 'cheat' ? e.cheat.place : 'extra')
+      return PLACE_ORDER.indexOf(place(a)) - PLACE_ORDER.indexOf(place(b))
+    })
     const exercises: LogEntry[] =
-      filter === 'meal'
-        ? []
-        : exerciseLogs
+      filter === 'all' || filter === 'exercise'
+        ? exerciseLogs
             .filter((l) => l.log_date === d)
             .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
-            .map((log) => ({ kind: 'exercise', log, pt: log.points }))
-    const entries = [...meals, ...exercises]
+            .map((log) => ({ kind: 'exercise', log, kcal: log.points }))
+        : []
+    const entries = [...placed, ...exercises]
     if (entries.length > 0) days.push({ date: d, entries })
   }
   return days
@@ -1204,7 +1175,7 @@ export function buildLogDays(input: {
 
 // --- 14.4. 体重チャート：チートの累計（棒）＋体重（線） ---
 
-// 食べたチート：日付のある登録チートとがっつりを、その日付に。今日より先は数えない
+// 食べたチート：日付のあるチートと品なしの🔥チートを、その日付に。今日より先・頻度ベースは数えない
 export function buildCheatEvents(input: {
   wants: MonthlyWantRow[]
   mealLogs: { log_date: string; slot: MealSlot; choice: MealChoice }[]
@@ -1213,55 +1184,12 @@ export function buildCheatEvents(input: {
   today: string
 }): CheatEvent[] {
   const { wants, mealLogs, slotTargets, from, today } = input
-  const active = wants.filter((r) => r.is_active !== false)
-  const dated: CheatEvent[] = active
-    .filter((r) => r.scheduled_date != null && r.scheduled_date >= from && r.scheduled_date <= today)
-    .map((row) => {
-      const entry: GaugeCheatEntry = {
-        mode: 'dated',
-        row,
-        date: row.scheduled_date as string,
-        costPt: getMonthlyWantRowCost(row, slotTargets),
-        done: true,
-      }
-      return { date: entry.date, costPt: entry.costPt, emoji: getGaugeCheatEmoji(entry), name: getGaugeCheatName(entry) }
-    })
-  const hearty: CheatEvent[] = expandHeartyCheats(mealLogs, from, today, getReplacedMealKeys(active)).map((e) => ({
-    date: e.date,
-    costPt: e.costPt,
-    emoji: getGaugeCheatEmoji(e),
-    name: getGaugeCheatName(e),
+  return listCheatsInRange({ wants, mealLogs, slotTargets, from, to: today }).map((c) => ({
+    date: c.date,
+    costPt: c.costKcal,
+    emoji: getCheatEmoji(c),
+    name: getCheatName(c),
   }))
-  return [...dated, ...hearty].sort((a, b) => a.date.localeCompare(b.date))
-}
-
-// 週◯回のチート（見出しの累計にだけ入れる）。登録した月から今月まで
-// 過去の月は月の回数をまるごと、今月は「月の回数 × 今日までの日数 ÷ 月の日数」の切り捨て
-export function calcFrequencyCheatKcal(input: {
-  wants: MonthlyWantRow[]
-  slotTargets: Pick<MealSlotTarget, 'slot' | 'kcal'>[]
-  from: string
-  today: string
-}): number {
-  const { wants, slotTargets, from, today } = input
-  const monthIndex = (date: string) => Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7)) - 1
-  const todayIndex = monthIndex(today)
-  const dayOfMonth = Number(today.slice(8, 10))
-  let total = 0
-  for (const row of wants) {
-    if (row.is_active === false || row.scheduled_date != null || (row.times_per_week ?? 0) <= 0) continue
-    const cost = getMonthlyWantRowCost(row, slotTargets)
-    const created = row.created_at ? formatDateJST(new Date(row.created_at)) : from
-    const start = Math.max(monthIndex(from), monthIndex(created))
-    for (let i = start; i <= todayIndex; i++) {
-      const year = Math.floor(i / 12)
-      const month = (i % 12) + 1
-      const times = countFrequencyInMonth(row.times_per_week as number, year, month)
-      const counted = i === todayIndex ? Math.floor((times * dayOfMonth) / getDaysInMonth(year, month)) : times
-      total += counted * cost
-    }
-  }
-  return total
 }
 
 // 体重の縦の範囲：中心 ± 2kg。外れる値があるときだけ、収まるように広げる
@@ -1370,7 +1298,7 @@ export function buildCheatWeightChart(input: {
     weightSegments,
     yMin: range.yMin,
     yMax: range.yMax,
-    totalKcal: cumulative + calcFrequencyCheatKcal({ wants, slotTargets, from, today }),
+    totalKcal: cumulative,
     weightChangeKg: calcWeightChangeInRange(weightLogs, from, today),
   }
 }
@@ -1667,7 +1595,7 @@ export function detectNewMilestones(
   for (const g of plan.gates) {
     const kind: MilestoneKind = `gate${g.index}`
     if (!achieved.has(kind) && avgKg <= g.targetWeightKg + EPSILON) {
-      found.push({ kind, title: `ゲート${g.index}達成！`, message: `開始から ${lossKg.toFixed(1)}kg 減った。この調子でいこう` })
+      found.push({ kind, title: `${g.endMonth}ヶ月目の目標体重に届きました`, message: `開始から ${lossKg.toFixed(1)}kg 減った。この調子でいこう` })
     }
   }
   for (const h of HEALTH_MILESTONES) {

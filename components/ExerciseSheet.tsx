@@ -7,7 +7,6 @@ import {
   EXERCISE_LABEL,
   EXERCISE_TYPE_EMOJI,
   EXERCISE_TYPE_LABELS,
-  POINT_LABEL,
   type ExerciseLogRow,
   type ExerciseType,
 } from '@/types'
@@ -96,7 +95,7 @@ export function ExerciseSheet({
       <div className="w-full max-w-md bg-stone-900 rounded-t-3xl px-5 pt-5 pb-10" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-bold">
-            {EXERCISE_EMOJI} {EXERCISE_LABEL}を{editing ? '直す' : '追加'}
+            {EXERCISE_EMOJI} {EXERCISE_LABEL}を{editing ? '直す' : '記録する'}
           </h3>
           <button type="button" onClick={onClose} className="text-stone-500 text-sm">
             閉じる
@@ -154,7 +153,7 @@ export function ExerciseSheet({
           </>
         )}
 
-        <p className="text-amber-400 text-sm font-medium mb-4">＋{points}pt が{POINT_LABEL}に貯まる</p>
+        <p className="text-amber-400 text-sm font-medium mb-4">{points.toLocaleString('ja-JP')}kcal 貯まります</p>
 
         {error && <p className="text-rose-400 text-sm mb-3">{error}</p>}
 

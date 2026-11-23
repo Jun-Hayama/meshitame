@@ -47,7 +47,7 @@ export default function SettingsPage() {
           <section className="bg-stone-900 rounded-2xl px-4 py-4">
             <p className="text-sm font-medium text-stone-100">減らすペース</p>
             <p className="text-stone-500 text-xs mt-0.5 mb-3">
-              1日の目安は、必要量からこの分を引いた量。いつものを続けるだけで、このペースで減っていきます
+              1日の目安は、必要量からこの分を引いた量です。いつものを続けるだけで、このペースで減っていきそうです
             </p>
             <div className="grid grid-cols-4 gap-2">
               {REDUCE_PACE_ORDER.map((p) => (
@@ -78,7 +78,7 @@ export default function SettingsPage() {
               <span className="text-xl">🎯</span>
               <div className="text-left">
                 <p className="text-sm font-medium text-stone-100">目標設定</p>
-                <p className="text-stone-500 text-xs mt-0.5">目標体重・期間・ゲート</p>
+                <p className="text-stone-500 text-xs mt-0.5">目標体重・期間</p>
               </div>
             </div>
             <span className="text-stone-600">›</span>
@@ -89,10 +89,10 @@ export default function SettingsPage() {
             className="w-full flex items-center justify-between bg-stone-900 rounded-2xl px-4 py-4"
           >
             <div className="flex items-center gap-3">
-              <span className="text-xl">★</span>
+              <span className="text-xl">🔥</span>
               <div className="text-left">
-                <p className="text-sm font-medium text-stone-100">チートの登録</p>
-                <p className="text-stone-500 text-xs mt-0.5">日付指定・毎週の頻度</p>
+                <p className="text-sm font-medium text-stone-100">チートの予定</p>
+                <p className="text-stone-500 text-xs mt-0.5">飲み会など、予定があるものを入れておく</p>
               </div>
             </div>
             <span className="text-stone-600">›</span>

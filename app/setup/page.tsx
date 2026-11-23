@@ -259,7 +259,7 @@ export default function SetupPage() {
 
           {/* 期間 */}
           <div>
-            <label className="text-stone-500 text-xs mb-1.5 block">期間（3ヶ月ごとにゲートがあります）</label>
+            <label className="text-stone-500 text-xs mb-1.5 block">期間（3ヶ月ごとに目標体重を置きます）</label>
             <div className="grid grid-cols-4 gap-2">
               {periodOptions.map(m => (
                 <button
@@ -316,13 +316,13 @@ export default function SetupPage() {
 
               {result.limit.withinLimit && (
                 <>
-                  {/* ゲート */}
+                  {/* 3ヶ月ごとの目標体重（内部はゲート） */}
                   <div className="bg-stone-900 rounded-2xl px-4 py-3">
-                    <p className="text-stone-500 text-xs mb-2">ゲート（3ヶ月ごと）</p>
+                    <p className="text-stone-500 text-xs mb-2">目標体重（3ヶ月ごと）</p>
                     <ul className="space-y-1.5">
                       {result.gatePlan.gates.map(g => (
                         <li key={g.index} className="flex justify-between text-sm">
-                          <span className="text-stone-400">ゲート{g.index}（{g.endMonth}ヶ月目）</span>
+                          <span className="text-stone-400">{g.endMonth}ヶ月目</span>
                           <span className="text-stone-100 tabular-nums">
                             {g.lossKg.toFixed(2)}kg 減 → <span className="text-amber-400 font-medium">{g.targetWeightKg.toFixed(1)}kg</span>
                           </span>

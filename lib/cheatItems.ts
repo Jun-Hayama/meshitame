@@ -80,7 +80,7 @@ export const CHEAT_ITEMS: CheatItem[] = [
     ['gyoza', '餃子5個', true], ['han_chahan', '半チャーハン', true],
   ]),
   ...t('party', [
-    ['party_light', '軽め（2〜3杯）'], ['party_normal', 'ふつう（4〜5杯）'], ['party_heavy', 'がっつり（6杯以上＋締め）'],
+    ['party_light', '軽め（2〜3杯）'], ['party_normal', 'ふつう（4〜5杯）'], ['party_heavy', 'たっぷり（6杯以上＋締め）'],
   ]),
   ...t('alcohol', [
     ['beer350', 'ビール350ml'], ['beer500', 'ビール500ml'], ['highball', 'ハイボール1杯'],

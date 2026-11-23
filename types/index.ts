@@ -71,13 +71,23 @@ export interface MonthlyWantRow {
   created_at: string
   // v2.1：中身を選んだチート（null は中身なし → WANT_COSTS をデフォルトに使う）
   cheat_type: CheatType | null
-  replace_slot: MealSlot | null // 置き換えのとき、どの食事の代わりか
+  replace_slot: MealSlot | null // 食事のチート（replace）のとき、どの食事か
   items: CheatItemSelection[] | null
   total_kcal: number | null
 }
 
-// 置き換え（食事の代わり）/ 上乗せ（食事に追加）
+// 内部の区別（16章）：replace = 食事のチート（朝・昼・夜）/ addon = 食事のほかに。画面ではどちらも「チート」
 export type CheatType = 'replace' | 'addon'
+
+// チートを足した場所：朝・昼・夜（食事のチート）か、食事のほかに
+export type CheatPlace = 'morning' | 'lunch' | 'dinner' | 'extra'
+
+export const CHEAT_PLACE_LABELS: Record<CheatPlace, string> = {
+  morning: '朝',
+  lunch: '昼',
+  dinner: '夜',
+  extra: '食事のほかに',
+}
 
 // チート1回分の中身（登録時の kcal をそのまま保存する）
 export interface CheatItemSelection {
@@ -100,11 +110,11 @@ export interface CustomCheatItemRow {
 export type MealSlot = 'morning' | 'lunch' | 'dinner'
 export type MealChoice = 'light' | 'normal' | 'hearty'
 
-// 記録の3択の表示名（12-1・13.1）。DBの値（light / normal / hearty）は変えない
+// 記録の3択の表示名（12-1・13.1・16章）。DBの値（light / normal / hearty）は変えない
 export const MEAL_CHOICE_LABELS: Record<MealChoice, string> = {
   light: 'メシため',
   normal: 'いつもの',
-  hearty: 'がっつり',
+  hearty: 'チート', // 🔥チート（16章。DBの値は hearty のまま）
 }
 
 export const MEAL_CHOICE_EMOJI: Record<MealChoice, string> = {
@@ -202,9 +212,6 @@ export const EXERCISE_TYPE_EMOJI: Record<ExerciseType, string> = {
   steps: '👟',
 }
 
-// ポイントの表示名（14.1）。数字の単位は pt のまま。内部キー（meshipo など）は変えない
-export const POINT_LABEL = 'チーぽ'
-
 // 運動の表示名（13.1）。テーブル名・型名（exercise）は変えない
 export const EXERCISE_LABEL = 'うごため'
 export const EXERCISE_EMOJI = '🏃'
@@ -221,30 +228,13 @@ export interface ExerciseLogRow {
   created_at: string
 }
 
-// がっつりの記録1件をチートとして数えたもの（12-2。DBにチートの行は作らない）
+// 品を選ばなかった🔥チート（meal_logs の hearty）1件（12-2・16章）
 export interface HeartyCheatEntry {
   mode: 'hearty'
   date: string // YYYY-MM-DD
   slot: MealSlot
   costPt: number // 300
 }
-
-// その月のチート1件（頻度ベースはその月に入る回数をまとめて1件）
-export type MonthCheatEntry =
-  | { mode: 'dated'; row: MonthlyWantRow; date: string; costPt: number; done: boolean }
-  | {
-      mode: 'frequency'
-      row: MonthlyWantRow
-      timesPerWeek: number
-      timesInMonth: number
-      costPerTimePt: number
-      costPt: number // costPerTimePt × timesInMonth
-    }
-
-export type DatedCheatEntry = Extract<MonthCheatEntry, { mode: 'dated' }>
-
-// 目標に入るチート（登録したチート ＋ がっつり）
-export type GaugeCheatEntry = MonthCheatEntry | HeartyCheatEntry
 
 // 貯まったptの内訳（12-2・12-4）
 export interface EarnedBreakdown {
@@ -254,85 +244,87 @@ export interface EarnedBreakdown {
   totalPt: number
 }
 
-// 週の振り返り（12-5）
+// 週（12-5・16章）
 export interface WeekSummary {
   from: string // 月曜
   to: string // 日曜
   earned: EarnedBreakdown
-  cheats: (DatedCheatEntry | HeartyCheatEntry)[] // その週の日付指定のチートとがっつり（頻度ベースは週◯回で別に出す）
-  frequencyCheats: { row: MonthlyWantRow; timesPerWeek: number; costPt: number }[]
-  cheatPt: number
+  cheats: MonthCheat[] // その週の日付のあるチートと品なしの🔥チート（頻度ベースは数えない）
+  cheatKcal: number
   weightDiffKg: number | null // 日曜の7日平均 − 前の日曜の7日平均（記録がなければ null）
 }
 
-export interface MeshipoGauge {
-  targetPt: number // その月のチートのコスト合計（がっつり含む）
-  earnedPt: number // 今日までに貯まったpt
-  pacePt: number // 今日までに貯まっていたい量 = 目標 × 経過日数 ÷ 月の日数
-  onPace: boolean
-  behindPt: number // ペースに追いつくまであと◯pt
-  catchUpWalkingMinutes: number // 今日◯分歩くとペースに追いつく
-  extraPt: number // 目標を超えた分（追加でチートできる量）
-  tamemeshiNeeded: number // 今月あと必要なためメシ = 切り上げ((目標 − 貯まった) ÷ 150)。0なら目標達成
-  fillRatio: number // ゲージの塗り（0〜1）
-  paceRatio: number // ペースの目印の位置（0〜1）
+// ===== v2.6 ◯月のチート（16章） =====
+
+// 数えるチート1件。carryover = 前月からの持ち越し / cheat = 日付のあるチート / hearty = 品なしの🔥チート
+export interface MonthCheat {
+  kind: 'carryover' | 'cheat' | 'hearty'
+  key: string // 前後の比較用（行の id など）
+  date: string // YYYY-MM-DD（持ち越しは月の初日）
+  place: CheatPlace
+  costKcal: number // 食事のチート：合計 − その食事の目安（下限0）/ 食事のほかに：合計 / 品なしの🔥チート：300
+  row: MonthlyWantRow | null
 }
 
-// ===== v2.3 なかったことに（13.3・15.4） =====
-
-// チートを並び順に累計したときの1件
-export interface ZeroCalEntry {
-  entry: GaugeCheatEntry
-  cumulativePt: number // この件までのコストの累計
-  zeroed: boolean // 累計 ≦ 貯まったpt（実質0kcal化済み）
+export interface Carryover {
+  fullKcal: number // 前月末のまだの分
+  kcal: number // 今月に数える分（7日まではまるごと。8日以降は7日までに当てた分だけ）
+  open: boolean // 7日まで
 }
 
-export interface ZeroCalStatus {
-  entries: ZeroCalEntry[] // 並び順（日付のあるもの → 日付のないもの）
-  totalPt: number // チートのコスト合計
-  earnedPt: number // 貯まったpt（= なかったことにできたkcal）
-  zeroedPt: number // なかったことにしたkcal = min(貯まった, 合計)
-  zeroedCount: number
-  next: { entry: GaugeCheatEntry; remainingPt: number; tamemeshiNeeded: number } | null // 次に0kcalになるチート
-  extraPt: number // 全部済みのとき、あと追加できる分
-  scalePt: number // ゲージの目盛りの最大 = max(合計, 貯まったpt)（14.2）
+export interface CheatLedgerEntry {
+  cheat: MonthCheat
+  cumulativeKcal: number
+  cleared: boolean // 累計 ≦ 貯めた分（なかったことに）
 }
 
-// カードの状態（15.4）：none = チート未登録 / empty = 貯まったpt 0 / partial = 途中 / full = 全部
-export type ZeroCalStage = 'none' | 'empty' | 'partial' | 'full'
-
-// ごほうび候補から選んだ一品（14.2）
-export interface RewardPick {
-  name: string
-  kcal: number
+// 今月の、今日より後の予定
+export interface PlannedCheat {
+  cheat: MonthCheat
+  ready: boolean // 余りで足りている
+  shortKcal: number // その予定までに足りない分
+  tamemeshiNeeded: number // 切り上げ(足りない分 ÷ 150)
 }
 
-// ゲージに乗せるチートのアイコン（近いものは1つにまとめる）
-export interface GaugeMarker {
-  ratio: number // 0〜1（累計コストの位置）
-  emoji: string
-  count: number // まとめた件数（2以上で「×2」）
-  zeroed: boolean // まとめた全部が0kcal化済み
+// カードの状態：pending = A（まだの分がある）/ spare = B（ぜんぶ済みで余りがある）/ empty = C
+export type CheatCardStage = 'pending' | 'spare' | 'empty'
+
+export interface MonthCheatStatus {
+  entries: CheatLedgerEntry[] // なかったことにする順番（持ち越し → 日付 → 朝・昼・夜・食事のほかに）
+  earned: EarnedBreakdown // 貯めた分の内訳
+  carryoverKcal: number
+  carryoverFullKcal: number
+  carryoverOpen: boolean // 7日までで、持ち越しがある（ログの「先月の分」）
+  eatenKcal: number // 食べた分（持ち越しを含む・今日まで）
+  savedKcal: number // 貯めた分
+  clearedKcal: number // min(貯めた分, 食べた分)
+  pendingKcal: number // まだの分
+  spareKcal: number // 余り
+  tamemeshiNeeded: number // 切り上げ(まだの分 ÷ 150)
+  stage: CheatCardStage
+  onTrack: boolean // 順調：食べた分 ≧ 1 かつ まだの分 0
+  planned: PlannedCheat[]
 }
 
 // ===== v2.4 ログ（14.3） =====
 
-export type LogFilter = 'all' | 'meal' | 'exercise'
+export type LogFilter = 'all' | 'meal' | 'cheat' | 'exercise'
 
 export type LogEntry =
-  | { kind: 'meal'; log: MealLogRow; pt: number } // メシため（light）だけ。置き換えチートの食事は pt 0
-  | { kind: 'exercise'; log: ExerciseLogRow; pt: number }
+  | { kind: 'meal'; log: MealLogRow; kcal: number } // メシため（light）だけ。食事のチートがある食事は出さない
+  | { kind: 'cheat'; cheat: MonthCheat; kcal: number }
+  | { kind: 'exercise'; log: ExerciseLogRow; kcal: number }
 
 export interface LogDay {
   date: string // YYYY-MM-DD
-  entries: LogEntry[] // 朝・昼・夜 → うごため（記録した順）
+  entries: LogEntry[] // 朝・昼・夜・食事のほかに → うごため（記録した順）
 }
 
 // ===== v2.4 体重チャート：チートの累計（棒）＋体重（線）（14.4） =====
 
 export type CheatChartPeriod = 'month' | 'all' // 今月 / はじめてから
 
-// 食べたチート1件（日付のある登録チートとがっつり）
+// 食べたチート1件（日付のあるチートと品なしの🔥チート）
 export interface CheatEvent {
   date: string
   costPt: number
@@ -363,7 +355,7 @@ export interface CheatWeightChartData {
   weightSegments: CheatWeightPoint[][] // ならした線（記録が無いところで途切れる）
   yMin: number | null // 体重の縦の範囲（記録が無ければ null）
   yMax: number | null
-  totalKcal: number // 見出しの累計 = 棒の最後 ＋ 週◯回のチート
+  totalKcal: number // 見出しの累計 = 棒の最後
   weightChangeKg: number | null // 期間の体重の変化（条件が揃わなければ null）
 }
 
@@ -456,6 +448,6 @@ export type MilestoneKind = `gate${number}` | 'loss3' | 'loss5'
 
 export interface Milestone {
   kind: MilestoneKind
-  title: string // 「ゲート1達成！」「開始から3%減」
+  title: string // 「3ヶ月目の目標体重に届きました」「開始から3%減」
   message: string
 }

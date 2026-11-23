@@ -14,25 +14,21 @@ import type { CheatChartPeriod, ExerciseLogRow, GoalPlanRow, MealLogRow, Monthly
 import {
   addDaysToDateStr,
   buildCheatWeightChart,
-  buildGaugeCheats,
   buildTargetLine,
   calcDailyIntakeFromPace,
   calcMealSlotTargets,
-  calcMonthEarnedBreakdown,
-  calcZeroCalStatus,
-  expandCheatsForMonth,
+  calcMonthCheatStatus,
+  calcMonthWeightChange,
   calcTargetGap,
   calcWeekOverWeek,
   calcWeightAverage,
   formatDateJST,
+  describeMonthWeightChange,
   formatWeightChange,
   formatMonthDayWeekday,
   getRecordableDateRange,
-  getReplacedMealKeys,
-  isOnPaceToday,
   isRecordableDate,
   isWeightRisingThreeWeeks,
-  orderZeroCalCheats,
   shouldShowWeightReassurance,
 } from '@/lib/calories'
 import { WEIGHT_REASSURE_MESSAGE, WEIGHT_REASSURE_TOAST_MS } from '@/lib/calorieConstants'
@@ -50,7 +46,7 @@ export default function WeightPage() {
   const [goal, setGoal] = useState<GoalPlanRow | null>(null)
   const [wants, setWants] = useState<MonthlyWantRow[]>([])
   const [heartyLogs, setHeartyLogs] = useState<MealLogRow[]>([])
-  // 順調の判定（15.1）に使う今月のメシため・うごための記録（今日の画面と同じ取り方）
+  // 順調の判定（16章）に使う前月の初日〜今日のメシため・うごための記録（今日の画面と同じ取り方。持ち越しのため前月から）
   const [monthMealLogs, setMonthMealLogs] = useState<MealLogRow[]>([])
   const [monthExerciseLogs, setMonthExerciseLogs] = useState<ExerciseLogRow[]>([])
   const [toast, setToast] = useState<string | null>(null)
@@ -62,7 +58,7 @@ export default function WeightPage() {
   const today = formatDateJST(new Date())
   const year = Number(today.slice(0, 4))
   const month = Number(today.slice(5, 7))
-  const monthStart = `${today.slice(0, 7)}-01`
+  const prevMonthStart = month === 1 ? `${year - 1}-12-01` : `${year}-${String(month - 1).padStart(2, '0')}-01`
   const recordRange = getRecordableDateRange(today)
   const [viewDate, setViewDate] = useState(today)
 
@@ -70,7 +66,7 @@ export default function WeightPage() {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
       if (!user) { router.push('/login'); return }
       setUserId(user.id)
-      // チャートの棒（14.4）：日付のあるチートとがっつり。はじめてからの分まで読む（がっつりの記録は多くない）
+      // チャートの棒（14.4）：日付のあるチートと品なしの🔥チート。はじめてからの分まで読む（hearty の記録は多くない）
       const [
         { data, error: loadErr },
         { data: goalData, error: goalErr },
@@ -83,8 +79,8 @@ export default function WeightPage() {
         supabase.from('goal_plans').select('*').eq('user_id', user.id).eq('is_active', true).maybeSingle(),
         supabase.from('monthly_wants').select('*').eq('user_id', user.id).eq('is_active', true),
         supabase.from('meal_logs').select('*').eq('user_id', user.id).eq('choice', 'hearty'),
-        supabase.from('meal_logs').select('*').eq('user_id', user.id).gte('log_date', monthStart).lte('log_date', today),
-        supabase.from('exercise_logs').select('*').eq('user_id', user.id).gte('log_date', monthStart).lte('log_date', today),
+        supabase.from('meal_logs').select('*').eq('user_id', user.id).gte('log_date', prevMonthStart).lte('log_date', today),
+        supabase.from('exercise_logs').select('*').eq('user_id', user.id).gte('log_date', prevMonthStart).lte('log_date', today),
       ])
       const firstError = loadErr ?? goalErr ?? wantErr ?? heartyErr ?? mealErr ?? exerciseErr
       if (firstError) setError(firstError.message)
@@ -96,7 +92,7 @@ export default function WeightPage() {
       setMonthExerciseLogs((exerciseData as ExerciseLogRow[]) || [])
       setLoading(false)
     })
-  }, [router, monthStart, today])
+  }, [router, prevMonthStart, today])
 
   const byDate = useMemo(() => new Map(logs.map((l) => [l.measured_at, l])), [logs])
   const recent = useMemo(() => [...logs].reverse().slice(0, LIST_LIMIT), [logs])
@@ -113,28 +109,22 @@ export default function WeightPage() {
     () => buildCheatWeightChart({ period, today, weightLogs: logs, wants, mealLogs: heartyLogs, slotTargets }),
     [period, today, logs, wants, heartyLogs, slotTargets]
   )
-  // 順調（15.1）：今日の画面の「◯月のメシため」と同じ目標・貯まったpt
-  const onPace = useMemo(() => {
-    const replacedMealKeys = getReplacedMealKeys(wants)
-    const ordered = orderZeroCalCheats(
-      buildGaugeCheats(
-        expandCheatsForMonth(wants, year, month, slotTargets, today),
-        monthMealLogs,
+  // 順調（16章）：今日の画面の「◯月のチート」と同じ判定（食べた分 ≧ 1 かつ まだの分 0）
+  const onPace = useMemo(
+    () =>
+      calcMonthCheatStatus({
         year,
         month,
-        replacedMealKeys
-      )
-    )
-    const earned = calcMonthEarnedBreakdown({
-      year,
-      month,
-      today,
-      mealLogs: monthMealLogs,
-      exerciseLogs: monthExerciseLogs,
-      replacedMealKeys,
-    })
-    return isOnPaceToday(today, calcZeroCalStatus(ordered, earned.totalPt).totalPt, earned.totalPt)
-  }, [wants, year, month, slotTargets, today, monthMealLogs, monthExerciseLogs])
+        today,
+        wants,
+        mealLogs: monthMealLogs,
+        exerciseLogs: monthExerciseLogs,
+        slotTargets,
+      }).onTrack,
+    [wants, year, month, slotTargets, today, monthMealLogs, monthExerciseLogs]
+  )
+  // 「これだけ食べて、月初めから◯kg減」（13.4。今日のカードから移した）
+  const monthWeightChange = useMemo(() => calcMonthWeightChange(logs, today), [logs, today])
   // 3週続けて増えている（15.3）
   const rising = useMemo(() => isWeightRisingThreeWeeks(logs, today), [logs, today])
   const gap = useMemo(
@@ -298,6 +288,9 @@ export default function WeightPage() {
                   log={byDate.get(viewDate) ?? null}
                   onSaved={upsertLocal}
                 />
+              )}
+              {monthWeightChange !== null && (
+                <p className="text-stone-300 text-xs mt-2 px-1">{describeMonthWeightChange(monthWeightChange)}</p>
               )}
             </section>
 
