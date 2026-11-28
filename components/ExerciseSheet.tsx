@@ -17,7 +17,7 @@ const MINUTE_PRESETS = [10, 20, 30, 45, 60, 90]
 const STEP_PRESETS = [3000, 5000, 8000, 10000]
 
 // editing を渡すと、その記録を直す・削除するシートになる（14.3）
-// initial を渡すと、その種類・時間を選んだ状態で開く（カードの［記録する］。すぐには保存しない）
+// initial を渡すと、その種類・時間を選んだ状態で開く（ヒントのシートの［記録する］。すぐには保存しない）
 export function ExerciseSheet({
   userId,
   logDate,

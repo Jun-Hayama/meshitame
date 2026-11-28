@@ -48,6 +48,7 @@ import {
   CheatCardBar,
   EasiestWay,
   QuickExercise,
+  ExercisePresets,
   RecordToastInput,
   CheatHints,
   WaterRetention,
@@ -103,9 +104,11 @@ import {
   EASY_WALK_MAX_KCAL,
   EASY_WALK_STEP_MINUTES,
   CHEAT_EQUIVALENT_FALLBACK_FOOD,
-  FREQUENT_EXERCISE_DAYS,
-  FREQUENT_EXERCISE_MAX,
-  FREQUENT_EXERCISE_DEFAULTS,
+  QUICK_EXERCISE_TYPES,
+  EXERCISE_PRESET_DEFAULT_MINUTES,
+  EXERCISE_PRESET_MIN_MINUTES,
+  EXERCISE_PRESET_MAX_MINUTES,
+  EXERCISE_PRESET_STEP_MINUTES,
   WATER_RETURN_DAYS,
   WATER_TOAST_MAX_DAY,
   WATER_UP_KG,
@@ -1063,19 +1066,15 @@ export function pickEasiestWay(pendingKcal: number): EasiestWay | null {
   return { type: 'walking', minutes }
 }
 
-// カードの一番下の行（16-追記 v2.6.3）：「🚶 30分歩けば、なかったことに」
+// ヒントのシートの見出しの下の1行（18-追記 v2.8.1）：「🚶 30分歩けば、なかったことに」
 export function describeEasiestWay(way: EasiestWay): string {
   return `${EXERCISE_TYPE_EMOJI.walking} ${way.minutes}分歩けば、なかったことに`
 }
 
-// 300kcalより多いときの一番下の行（「ヒント ›」と並べる）
-export const CHEAT_CARD_HOW_TO_REACH = 'どうやって届く？'
-
-// カードの一番下の行：300kcal以下なら歩く分数（［記録する］を出す）、より多いなら「どうやって届く？」。まだの分0なら null
-export function describeCardWayLine(pendingKcal: number): { text: string; walkMinutes: number | null } | null {
-  if (pendingKcal <= 0) return null
+// ヒントのシートの［記録する］つきの1行：まだの分が300kcal以下のときだけ。より多い・0以下なら null
+export function describeEasyWalkLine(pendingKcal: number): { text: string; walkMinutes: number } | null {
   const way = pickEasiestWay(pendingKcal)
-  return way ? { text: describeEasiestWay(way), walkMinutes: way.minutes } : { text: CHEAT_CARD_HOW_TO_REACH, walkMinutes: null }
+  return way ? { text: describeEasiestWay(way), walkMinutes: way.minutes } : null
 }
 
 // ヒントの数：まだの分を それぞれの kcal で割って切り上げ。まだの分が0なら null
@@ -1185,51 +1184,39 @@ export function describeRecordToast(record: RecordToastInput, before: MonthCheat
   return `${head}。今月のチートは、ぜんぶなかったことに。`
 }
 
-// --- 16-追記 v2.6.4 いつものうごため ---
+// --- 18-追記 v2.8.1 うごための4つのボタンと時間 ---
 
-// 直近30日（今日を含む）のうごため（歩数は除く）を種類ごとに数え、回数の多い種類から2つ（同じ種類は1つだけ）
-// 回数が同じなら、最後に記録した日が新しい種類を先。分数はその種類でいちばん多く記録した分数（同じ回数なら新しいほう）
-// 足りないときは ウォーキング30分 → ランニング30分 で埋める（すでに出ている種類は飛ばす）
-export function pickFrequentExercises(
-  logs: Pick<ExerciseLogRow, 'log_date' | 'exercise_type' | 'minutes' | 'created_at'>[],
-  today: string,
-  days = FREQUENT_EXERCISE_DAYS,
-  limit = FREQUENT_EXERCISE_MAX
-): QuickExercise[] {
-  const from = addDaysToDateStr(today, -(days - 1))
-  type Tally = { count: number; last: string }
-  const types = new Map<QuickExercise['type'], Tally & { minutes: Map<number, Tally> }>()
-  const bump = (t: Tally, at: string) => {
-    t.count += 1
-    if (at > t.last) t.last = at
+// 「うごための時間」で選べる分数：15, 30, …, 120
+export function listExercisePresetOptions(): number[] {
+  const options: number[] = []
+  for (let m = EXERCISE_PRESET_MIN_MINUTES; m <= EXERCISE_PRESET_MAX_MINUTES; m += EXERCISE_PRESET_STEP_MINUTES) options.push(m)
+  return options
+}
+
+function isValidPresetMinutes(v: unknown): v is number {
+  return (
+    typeof v === 'number' &&
+    Number.isInteger(v) &&
+    v >= EXERCISE_PRESET_MIN_MINUTES &&
+    v <= EXERCISE_PRESET_MAX_MINUTES &&
+    v % EXERCISE_PRESET_STEP_MINUTES === 0
+  )
+}
+
+// DBの値（user_profiles.exercise_presets）を読む。足りない・おかしい種類だけ30分にし、知らない種類は捨てる
+export function normalizeExercisePresets(raw: unknown): ExercisePresets {
+  const obj = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const presets = {} as ExercisePresets
+  for (const type of QUICK_EXERCISE_TYPES) {
+    const v = obj[type]
+    presets[type] = isValidPresetMinutes(v) ? v : EXERCISE_PRESET_DEFAULT_MINUTES
   }
-  for (const l of logs) {
-    if (l.exercise_type === 'steps' || !l.minutes || l.minutes <= 0) continue
-    if (l.log_date < from || l.log_date > today) continue
-    const at = `${l.log_date} ${l.created_at ?? ''}`
-    let group = types.get(l.exercise_type)
-    if (!group) {
-      group = { count: 0, last: '', minutes: new Map() }
-      types.set(l.exercise_type, group)
-    }
-    bump(group, at)
-    let m = group.minutes.get(l.minutes)
-    if (!m) {
-      m = { count: 0, last: '' }
-      group.minutes.set(l.minutes, m)
-    }
-    bump(m, at)
-  }
-  const byCountThenRecent = (a: Tally, b: Tally) => b.count - a.count || b.last.localeCompare(a.last)
-  const picked: QuickExercise[] = [...types.entries()]
-    .sort(([, a], [, b]) => byCountThenRecent(a, b))
-    .slice(0, limit)
-    .map(([type, g]) => ({ type, minutes: [...g.minutes.entries()].sort(([, a], [, b]) => byCountThenRecent(a, b))[0][0] }))
-  for (const d of FREQUENT_EXERCISE_DEFAULTS) {
-    if (picked.length >= limit) break
-    if (!picked.some((p) => p.type === d.type)) picked.push({ type: d.type, minutes: d.minutes })
-  }
-  return picked
+  return presets
+}
+
+// 今日の画面の4つのボタン（ウォーキング・ランニング・筋トレ・スポーツの順）
+export function buildQuickExercises(presets: ExercisePresets): QuickExercise[] {
+  return QUICK_EXERCISE_TYPES.map((type) => ({ type, minutes: presets[type] }))
 }
 
 // --- 16. よく食べるもの（直近60日に記録した回数の多い順。頻度ベースで登録済みの品も入れる） ---

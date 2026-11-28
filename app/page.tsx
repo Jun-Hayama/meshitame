@@ -44,7 +44,8 @@ import {
   getCheatRowEmoji,
   getRecordableDateRange,
   isWeightRisingThreeWeeks,
-  pickFrequentExercises,
+  buildQuickExercises,
+  normalizeExercisePresets,
   shouldShowWeightReassurance,
 } from '@/lib/calories'
 import {
@@ -61,6 +62,7 @@ import { CheatItemPicker, type CheatPickerTarget } from '@/components/CheatItemP
 import { ExerciseSheet } from '@/components/ExerciseSheet'
 import { WeightEntryCard } from '@/components/WeightEntryCard'
 import { useReducePace } from '@/lib/reducePace'
+import { useExercisePresets } from '@/lib/exercisePresets'
 import { useMilestones } from '@/lib/milestones'
 import { MilestoneCards } from '@/components/MilestoneCards'
 import { MonthMeshitameCard } from '@/components/MonthMeshitameCard'
@@ -226,8 +228,9 @@ export default function Home() {
   // カードの換算の行の体重の部分（13.4。今日までの月初めからの変化）
   const monthWeightDiffKg = useMemo(() => calcMonthWeightChange(weightLogs, today), [weightLogs, today])
 
-  // いつものうごため（16-追記 v2.6.3）：直近30日によく記録したもの2つ
-  const quickExercises = useMemo(() => pickFrequentExercises(exerciseLogs, today), [exerciseLogs, today])
+  // うごための4つのボタン（18-追記 v2.8.1）：時間は設定画面の「うごための時間」。読み込み中・失敗したときは30分
+  const { presets } = useExercisePresets(userId)
+  const quickExercises = useMemo(() => buildQuickExercises(presets ?? normalizeExercisePresets(null)), [presets])
 
   // 記録のあとのトースト（1つだけ）
   // メシため・うごため（record）：describeRecordToast（16-追記 v2.6.3）。それ以外：新たになかったことになったチートがあれば「{チート名}、なかったことに。」
@@ -379,7 +382,7 @@ export default function Home() {
     applyChange({ wants: nextWants, meals })
   }
 
-  // いつものうごため：その場で保存して、トーストに［取り消す］を出す（16-追記 v2.6.2・v2.6.3）
+  // うごための4つのボタン：その場で保存して、トーストに［取り消す］を出す（16-追記 v2.6.2・v2.6.3・18-追記 v2.8.1）
   async function saveQuickExercise(values: QuickExercise) {
     const uid = await currentUserId()
     if (!uid) return
@@ -578,10 +581,6 @@ export default function Home() {
             status={status}
             monthWeightDiffKg={monthWeightDiffKg}
             onOpenLog={() => router.push('/log')}
-            onRecordWalk={(minutes) => {
-              setViewDate(today)
-              setExerciseSheet({ initial: { type: 'walking', minutes } })
-            }}
             onOpenHints={setHints}
           />
           {/* 戻り予報（17章）：今日がむくみやすい日のときだけ。カードの枠の外 */}
@@ -754,7 +753,17 @@ export default function Home() {
 
       {showTargets && <MealExamplesSheet targets={slotTargets} onClose={() => setShowTargets(false)} />}
 
-      {hints && <CheatHintSheet hints={hints} onClose={() => setHints(null)} />}
+      {hints && (
+        <CheatHintSheet
+          hints={hints}
+          onClose={() => setHints(null)}
+          onRecordWalk={(minutes) => {
+            // シートを閉じてから、うごための画面をウォーキング・その分数で開く（今日の記録として）
+            setViewDate(today)
+            setExerciseSheet({ initial: { type: 'walking', minutes } })
+          }}
+        />
+      )}
 
       {toast && <Toast message={toast.message} durationMs={toast.durationMs} action={toast.action} onDone={clearToast} />}
 

@@ -96,8 +96,10 @@ import {
   describeMeshitameToast,
   describeExerciseToast,
   describeRecordToast,
-  describeCardWayLine,
-  pickFrequentExercises,
+  describeEasyWalkLine,
+  normalizeExercisePresets,
+  buildQuickExercises,
+  listExercisePresetOptions,
   pickFrequentCheatItems,
   isWaterHeavyRow,
   listWaterHeavyDays,
@@ -1704,18 +1706,18 @@ describe('◯月のチート（16章 v2.6）', () => {
       })
     })
 
-    describe('カードの一番下の行（16-追記 v2.6.3）', () => {
+    describe('ヒントのシートの歩く1行（18-追記 v2.8.1）', () => {
       it('300kcal以下：歩く分数と［記録する］', () => {
-        expect(describeCardWayLine(135)).toEqual({ text: '🚶 30分歩けば、なかったことに', walkMinutes: 30 })
-        expect(describeCardWayLine(300)).toEqual({ text: '🚶 60分歩けば、なかったことに', walkMinutes: 60 })
+        expect(describeEasyWalkLine(135)).toEqual({ text: '🚶 30分歩けば、なかったことに', walkMinutes: 30 })
+        expect(describeEasyWalkLine(300)).toEqual({ text: '🚶 60分歩けば、なかったことに', walkMinutes: 60 })
       })
 
-      it('300kcalより多い：「どうやって届く？」', () => {
-        expect(describeCardWayLine(301)).toEqual({ text: 'どうやって届く？', walkMinutes: null })
+      it('300kcalより多い：出さない', () => {
+        expect(describeEasyWalkLine(301)).toBeNull()
       })
 
       it('まだの分0：出さない', () => {
-        expect(describeCardWayLine(0)).toBeNull()
+        expect(describeEasyWalkLine(0)).toBeNull()
       })
 
       describe('チートの kcal の横の ✓（16-追記 v2.6.5）', () => {
@@ -1723,7 +1725,7 @@ describe('◯月のチート（16章 v2.6）', () => {
           const s = status({ wants: [extra('2026-11-02', 200)], mealLogs: lights('2026-11-03', 3) })
           expect(s.spareKcal).toBe(250)
           expect(isCheatCovered(s)).toBe(true)
-          expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+          expect(describeEasyWalkLine(s.pendingKcal)).toBeNull()
           expect(calcCheatCardBar(s.eatenKcal, s.savedKcal)!.kind).toBe('over')
         })
 
@@ -1741,11 +1743,11 @@ describe('◯月のチート（16章 v2.6）', () => {
           expect(isCheatCovered(s)).toBe(false)
         })
 
-        it('チート0：貯めた分があっても出さない。一番下の行もなし', () => {
+        it('チート0：貯めた分があっても出さない。歩く1行もなし', () => {
           const s = status({ mealLogs: lights('2026-11-03', 2) })
           expect(s.eatenKcal).toBe(0)
           expect(isCheatCovered(s)).toBe(false)
-          expect(describeCardWayLine(s.pendingKcal)).toBeNull()
+          expect(describeEasyWalkLine(s.pendingKcal)).toBeNull()
           expect(isCheatCovered(status({}))).toBe(false)
         })
       })
@@ -1924,101 +1926,63 @@ describe('◯月のチート（16章 v2.6）', () => {
     expect(describeExerciseToast({ exercise_type: 'walking', minutes: 10, steps: null, points: 50 })).toBe('🏃 うごため 10分。')
   })
 
-  describe('いつものうごため（16-追記 v2.6.4）', () => {
-    const ex = (
-      log_date: string,
-      exercise_type: ExerciseLogRow['exercise_type'],
-      minutes: number | null,
-      created_at = `${log_date}T09:00:00Z`
-    ) => ({ log_date, exercise_type, minutes, created_at })
-    const today = '2026-11-20'
+  describe('うごための4つのボタンと時間（18-追記 v2.8.1）', () => {
+    const all30 = { walking: 30, running: 30, weights: 30, sports: 30 }
 
-    it('種類ごとに数え、回数の多い種類から2つ', () => {
-      const logs = [
-        ex('2026-11-10', 'running', 20),
-        ex('2026-11-11', 'running', 30), // 時間が違っても同じ種類として数える
-        ex('2026-11-12', 'running', 20),
-        ex('2026-11-12', 'weights', 45),
-        ex('2026-11-13', 'weights', 45),
-        ex('2026-11-15', 'walking', 30),
-      ]
-      expect(pickFrequentExercises(logs, today)).toEqual([
-        { type: 'running', minutes: 20 },
-        { type: 'weights', minutes: 45 },
-      ])
+    it('正しい値はそのまま', () => {
+      expect(normalizeExercisePresets({ walking: 45, running: 15, weights: 120, sports: 60 })).toEqual({
+        walking: 45,
+        running: 15,
+        weights: 120,
+        sports: 60,
+      })
     })
 
-    it('同じ種類は1つだけ（いちばん多い組み合わせが同じ種類で2つあっても）', () => {
-      const logs = [
-        ex('2026-11-10', 'walking', 30),
-        ex('2026-11-11', 'walking', 30),
-        ex('2026-11-12', 'walking', 45),
-        ex('2026-11-13', 'walking', 45),
-        ex('2026-11-14', 'cycling', 40),
-      ]
-      const picked = pickFrequentExercises(logs, today)
-      expect(picked.map((p) => p.type)).toEqual(['walking', 'cycling'])
+    it('種類が足りない：その種類だけ30分', () => {
+      expect(normalizeExercisePresets({ walking: 45 })).toEqual({ ...all30, walking: 45 })
     })
 
-    it('分数はその種類でいちばん多く記録した分数。同じ回数なら新しいほう', () => {
-      const logs = [
-        ex('2026-11-10', 'walking', 30),
-        ex('2026-11-11', 'walking', 45),
-        ex('2026-11-12', 'walking', 45),
-        ex('2026-11-13', 'running', 20),
-        ex('2026-11-16', 'running', 30), // 20分と30分が1回ずつ → 新しい30分
-      ]
-      expect(pickFrequentExercises(logs, today)).toEqual([
+    it('null・文字列・配列：すべて30分', () => {
+      expect(normalizeExercisePresets(null)).toEqual(all30)
+      expect(normalizeExercisePresets(undefined)).toEqual(all30)
+      expect(normalizeExercisePresets('walking')).toEqual(all30)
+      expect(normalizeExercisePresets([45, 30])).toEqual(all30)
+      expect(normalizeExercisePresets({ walking: '45' })).toEqual(all30)
+    })
+
+    it('範囲の外（0・135）：その種類だけ30分', () => {
+      expect(normalizeExercisePresets({ walking: 0, running: 135, weights: 15, sports: 120 })).toEqual({
+        walking: 30,
+        running: 30,
+        weights: 15,
+        sports: 120,
+      })
+    })
+
+    it('15分刻みでない（20）：その種類だけ30分', () => {
+      expect(normalizeExercisePresets({ walking: 20, running: 22.5, weights: 45, sports: 60 })).toEqual({
+        walking: 30,
+        running: 30,
+        weights: 45,
+        sports: 60,
+      })
+    })
+
+    it('知らない種類は捨てる', () => {
+      expect(normalizeExercisePresets({ walking: 45, cycling: 60, steps: 8000 })).toEqual({ ...all30, walking: 45 })
+    })
+
+    it('ボタンは ウォーキング・ランニング・筋トレ・スポーツ の順で、設定した分数', () => {
+      expect(buildQuickExercises({ walking: 45, running: 30, weights: 15, sports: 60 })).toEqual([
         { type: 'walking', minutes: 45 },
         { type: 'running', minutes: 30 },
-      ])
-    })
-
-    it('同じ回数の種類なら、最後に記録した日が新しいほうが先', () => {
-      const logs = [
-        ex('2026-11-10', 'cycling', 40),
-        ex('2026-11-18', 'running', 20),
-        ex('2026-11-12', 'sports', 60),
-        ex('2026-11-19', 'cycling', 40, '2026-11-19T07:00:00Z'),
-        ex('2026-11-19', 'sports', 60, '2026-11-19T08:00:00Z'),
-        ex('2026-11-11', 'running', 20),
-      ]
-      expect(pickFrequentExercises(logs, today)).toEqual([
+        { type: 'weights', minutes: 15 },
         { type: 'sports', minutes: 60 },
-        { type: 'cycling', minutes: 40 },
       ])
     })
 
-    it('歩数の記録と、30日より前の記録は数えない', () => {
-      const logs = [
-        ex('2026-11-15', 'steps', null),
-        ex('2026-11-16', 'steps', null),
-        ex('2026-10-21', 'cycling', 40), // 30日前（数えない）
-        ex('2026-10-22', 'sports', 60), // 今日を含めて30日目（数える）
-      ]
-      expect(pickFrequentExercises(logs, today)).toEqual([
-        { type: 'sports', minutes: 60 },
-        { type: 'walking', minutes: 30 },
-      ])
-    })
-
-    it('記録がなければ ウォーキング30分・ランニング30分', () => {
-      expect(pickFrequentExercises([], today)).toEqual([
-        { type: 'walking', minutes: 30 },
-        { type: 'running', minutes: 30 },
-      ])
-    })
-
-    it('足りないときの埋め方：すでに出ている種類は飛ばす', () => {
-      // ウォーキング45分があるので、ウォーキング30分は足さない
-      expect(pickFrequentExercises([ex('2026-11-15', 'walking', 45)], today)).toEqual([
-        { type: 'walking', minutes: 45 },
-        { type: 'running', minutes: 30 },
-      ])
-      expect(pickFrequentExercises([ex('2026-11-15', 'running', 20)], today)).toEqual([
-        { type: 'running', minutes: 20 },
-        { type: 'walking', minutes: 30 },
-      ])
+    it('選べる時間：15分から120分まで15分刻みの8個', () => {
+      expect(listExercisePresetOptions()).toEqual([15, 30, 45, 60, 75, 90, 105, 120])
     })
   })
 

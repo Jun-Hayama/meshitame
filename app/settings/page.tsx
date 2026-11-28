@@ -5,8 +5,20 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { BottomNav } from '@/components/BottomNav'
 import { describeReducePaceError, saveReducePace, useReducePace } from '@/lib/reducePace'
-import { calcPaceKgPerMonth } from '@/lib/calories'
-import { REDUCE_PACE_LABELS, REDUCE_PACE_ORDER, type ReducePace } from '@/types'
+import { describeExercisePresetsError, saveExercisePresets, useExercisePresets } from '@/lib/exercisePresets'
+import { calcPaceKgPerMonth, listExercisePresetOptions } from '@/lib/calories'
+import { QUICK_EXERCISE_TYPES } from '@/lib/calorieConstants'
+import {
+  EXERCISE_TYPE_EMOJI,
+  EXERCISE_TYPE_LABELS,
+  REDUCE_PACE_LABELS,
+  REDUCE_PACE_ORDER,
+  type ExercisePresets,
+  type QuickExerciseType,
+  type ReducePace,
+} from '@/types'
+
+const PRESET_OPTIONS = listExercisePresetOptions()
 
 export default function SettingsPage() {
   const router = useRouter()
@@ -14,6 +26,10 @@ export default function SettingsPage() {
   const { pace, error: loadError, setPace } = useReducePace(userId)
   const [saving, setSaving] = useState<ReducePace | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // うごための時間（18-追記 v2.8.1）：選んだらすぐ保存。失敗したら元の値に戻す
+  const { presets, setPresets } = useExercisePresets(userId)
+  const [savingPreset, setSavingPreset] = useState(false)
+  const [presetError, setPresetError] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -33,6 +49,22 @@ export default function SettingsPage() {
       setSaveError(describeReducePaceError(e))
     }
     setSaving(null)
+  }
+
+  async function choosePreset(type: QuickExerciseType, minutes: number) {
+    if (!userId || !presets || presets[type] === minutes) return
+    const prev = presets
+    const next: ExercisePresets = { ...presets, [type]: minutes }
+    setPresets(next)
+    setSavingPreset(true)
+    setPresetError(null)
+    try {
+      await saveExercisePresets(userId, next)
+    } catch (e) {
+      setPresets(prev)
+      setPresetError(describeExercisePresetsError(e))
+    }
+    setSavingPreset(false)
   }
 
   return (
@@ -68,6 +100,36 @@ export default function SettingsPage() {
               ))}
             </div>
             {(saveError || loadError) && <p className="text-rose-400 text-xs mt-2">{saveError || loadError}</p>}
+          </section>
+
+          {/* うごための時間（18-追記 v2.8.1）：今日の画面の4つのボタンで記録する分数 */}
+          <section className="bg-stone-900 rounded-2xl px-4 py-4">
+            <p className="text-sm font-medium text-stone-100">うごための時間</p>
+            <p className="text-stone-500 text-xs mt-0.5 mb-3">今日の画面のボタンを押したときに記録する時間です</p>
+            <ul className="space-y-2">
+              {QUICK_EXERCISE_TYPES.map((type) => (
+                <li key={type} className="flex items-center justify-between">
+                  <label htmlFor={`preset-${type}`} className="text-sm text-stone-200">
+                    {EXERCISE_TYPE_EMOJI[type]} {EXERCISE_TYPE_LABELS[type]}
+                  </label>
+                  <select
+                    id={`preset-${type}`}
+                    value={presets?.[type] ?? ''}
+                    disabled={!presets || savingPreset}
+                    onChange={(e) => choosePreset(type, Number(e.target.value))}
+                    className="bg-stone-800 text-stone-100 text-sm rounded-xl px-3 py-2 disabled:opacity-50"
+                  >
+                    {!presets && <option value="">…</option>}
+                    {PRESET_OPTIONS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}分
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              ))}
+            </ul>
+            {presetError && <p className="text-rose-400 text-xs mt-2">{presetError}</p>}
           </section>
 
           <button

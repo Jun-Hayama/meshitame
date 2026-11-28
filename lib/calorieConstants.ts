@@ -143,14 +143,12 @@ export const CHEAT_HINT_TIPS = [
 // 1タップで記録したうごための［取り消す］を出しておく時間（16-追記 v2.6.2）
 export const UNDO_TOAST_MS = 5000
 
-// いつものうごため（16-追記 v2.6.4）：直近この日数のうごため（歩数は除く）を種類ごとに数え、回数の多い種類からこの数まで
-export const FREQUENT_EXERCISE_DAYS = 30
-export const FREQUENT_EXERCISE_MAX = 2
-// 足りないときに、この順で埋める（すでに出ている種類は飛ばす）
-export const FREQUENT_EXERCISE_DEFAULTS = [
-  { type: 'walking', minutes: 30 },
-  { type: 'running', minutes: 30 },
-] as const
+// うごための4つのボタン（18-追記 v2.8.1）：この順に並べる。時間は設定画面の「うごための時間」（user_profiles.exercise_presets）
+export const QUICK_EXERCISE_TYPES = ['walking', 'running', 'weights', 'sports'] as const
+export const EXERCISE_PRESET_DEFAULT_MINUTES = 30
+export const EXERCISE_PRESET_MIN_MINUTES = 15
+export const EXERCISE_PRESET_MAX_MINUTES = 120
+export const EXERCISE_PRESET_STEP_MINUTES = 15
 
 // 活動量の選び方の下の一言（16-追記 v2.6.3）。活動係数は変えない
 export const ACTIVITY_LEVEL_NOTE =

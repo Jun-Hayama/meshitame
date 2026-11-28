@@ -1454,3 +1454,75 @@ DBは `migration_v2_8_friends.sql` を足す（既存テーブルの RLS と列�
 - 「負け」「遅れ」「順位」「食べすぎ」「我慢」「禁止」は使わない。下がったときも責めない（「ちょっと寄り道中」「むくみ中」）
 - 記録していない友だちについて、何も出さない（「◯日記録なし」などは出さない）
 - マイナスの数字は出さない
+
+## 18-追記 v2.8.1（2026-11-28）：カードのヒントの位置・うごための4つのボタンと時間の設定
+
+16章の追記（16-追記 v2.6.3〜v2.6.5 の「いつものうごため2つ」「カードの一番下の行」）と食い違うところは、この追記を優先する。
+
+### 1. カード「◯月のチート」：ヒントを「あと◯kcal」の横に置く
+
+- 一番下の行（`describeCardWayLine` の行）はなくす。「どうやって届く？ ヒント ›」も「🚶 30分歩けば、なかったことに［記録する］ヒント ›」も出さない
+- 代わりに、「貯めた」の行の右端、「あと945kcal」のすぐ右に「ヒント ›」を置く
+  - 出すのは「あと◯kcal」が出ているとき（`bar.kind === 'short'` で、`buildCheatHints` が null でないとき）だけ。なかったことにできたら「あと◯kcal」と一緒に消える
+  - 見た目：amber-400、text-xs、太字。カードの中のボタン（`InnerButton`）で、押すとヒントのシートを開く（カード全体の「ログへ」より優先）。押せる範囲は文字より少し広め（上下に余白）
+- 横幅が足りないときは、左の「🐷31回 🏃11回」を省略（truncate）し、「◯kcal」「あと◯kcal」「ヒント ›」は折り返さず必ず見えるようにする（幅375pxで確認）
+- 予定の行（「28日の焼肉まで、あと450kcal」）は今のまま
+
+### 2. ヒントのシート：カードの一番下の行でやっていたことを中に入れる
+
+- 見出し「あと◯kcal」のすぐ下に、まだの分が `EASY_WALK_MAX_KCAL`（300kcal）以下のときだけ「🚶 30分歩けば、なかったことに」＋［記録する］（amber のボタン）の1行を出す
+  - 分数はウォーキングの kcal で割って `EASY_WALK_STEP_MINUTES`（10分）単位で切り上げ（`pickEasiestWay`）
+  - ［記録する］を押したら、シートを閉じてから、うごための画面をウォーキング・その分数で開く（今日の記録として。すぐには保存しない）
+- `describeCardWayLine` は `describeEasyWalkLine(pendingKcal)`（`{ text, walkMinutes } | null`）に直す。300kcalを超えるとき・0以下のときは null。「どうやって届く？」の文言はなくす
+- 回数・時間・歩数の表と「ちょっとしたコツ」は今のまま
+
+### 3. うごため：4つのボタンを固定で並べる
+
+- 今日の記録の「🏃 うごため」のボタンは、🚶 ウォーキング・🏃 ランニング・💪 筋トレ・⚽ スポーツ・［＋］の5つに固定する（いつものうごため2つを履歴から選ぶ仕組みはやめる）
+- ボタンの文字は「アイコン＋時間」だけ（例：「🚶45分」）。種類名と kcal は出さない（kcal はトーストで伝える）。読み上げ用に `aria-label`（「ウォーキング 45分を記録」）をつける
+  - 時間は設定画面の「うごための時間」（4.）。セットしていなければ30分
+- 5つは1行に同じ幅で並べる（`grid grid-cols-5`）。文字は折り返さない。3桁の分数（「🚶120分」など）はそのボタンだけ文字を少し小さくする
+- ［＋］は枠線だけ（4つは bg-stone-800 ＋ amber の文字）。押すとうごための画面を開く（時間を変えたいとき・自転車・歩数はここから）
+- 4つを押したときは、その場で保存してトースト（`describeRecordToast`）と［取り消す］（5秒）を出す。2回押したら、セットした時間の記録がもう1件増える
+- 小見出し「🏃 うごため　意識して動いた分」と枠、「今日は 🚶30分・👣8,000歩」の行は今のまま。過去の日を見ているときは、その日に記録される
+- `pickFrequentExercises`・`FREQUENT_EXERCISE_DAYS`・`FREQUENT_EXERCISE_MAX`・`FREQUENT_EXERCISE_DEFAULTS` はなくす
+
+### 4. 設定画面：うごための時間
+
+- 設定画面の「減らすペース」の下にカードを1枚足す
+
+```
+うごための時間
+今日の画面のボタンを押したときに記録する時間です
+🚶 ウォーキング   ［45分 ▾］
+🏃 ランニング     ［30分 ▾］
+💪 筋トレ         ［15分 ▾］
+⚽ スポーツ       ［60分 ▾］
+```
+
+- 選べる時間：15分〜120分、15分刻み。最初はすべて30分
+- 選んだらすぐ保存する（保存ボタンはなし）。失敗したら減らすペースと同じ形で赤い文字を出して、元の値に戻す
+- 読み書きは `lib/exercisePresets.ts`（`useExercisePresets(userId)`・`saveExercisePresets(userId, presets)`。`lib/reducePace.ts` と同じ形。upsert は `onConflict: 'id'`）
+- 読み込みに失敗したとき（行がない・列がまだない）は、すべて30分として動かす。今日の画面はエラーを出さずにボタンを出す
+
+### 5. 定数と計算
+
+- `lib/calorieConstants.ts`：`QUICK_EXERCISE_TYPES = ['walking', 'running', 'weights', 'sports']`（この順）・`EXERCISE_PRESET_DEFAULT_MINUTES = 30`・`EXERCISE_PRESET_MIN_MINUTES = 15`・`EXERCISE_PRESET_MAX_MINUTES = 120`・`EXERCISE_PRESET_STEP_MINUTES = 15`
+- `types/index.ts`：`QuickExerciseType = typeof QUICK_EXERCISE_TYPES[number]`・`ExercisePresets = Record<QuickExerciseType, number>`
+- `lib/calories.ts`
+  - `normalizeExercisePresets(raw)`：DBの値を読むときに使う。種類が足りない・数でない・範囲の外・15分刻みでない値は、その種類だけ30分にする。知らない種類は捨てる
+  - `buildQuickExercises(presets)`：`QUICK_EXERCISE_TYPES` の順に `{ type, minutes }` を4つ返す
+  - `listExercisePresetOptions()`：[15, 30, …, 120]
+  - `describeEasyWalkLine(pendingKcal)`：2. のとおり
+
+### 6. データの持ち方（`migration_v2_8_1_exercise_presets.sql`）
+
+```sql
+alter table user_profiles
+  add column if not exists exercise_presets jsonb not null
+  default '{"walking":30,"running":30,"weights":30,"sports":30}'::jsonb;
+```
+
+- 何度実行しても大丈夫な書き方（`migration_v2_4_reduce_pace.sql` と同じ形）。既存の行は既定値（すべて30分）になり、ほかの列は変えない
+- RLS（`users_own_data`：`auth.uid() = id`）がなければ作り、`authenticated` に select / insert / update を grant する
+- 値のチェックは画面側（`normalizeExercisePresets`）で行うので、DBの check 制約は付けない

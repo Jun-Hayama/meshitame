@@ -1,3 +1,5 @@
+import type { QUICK_EXERCISE_TYPES } from '@/lib/calorieConstants'
+
 export interface WeightLog {
   id: string
   user_id: string
@@ -332,9 +334,12 @@ export interface EasiestWay {
 
 // ===== v2.6.3 いつものうごため・記録のトースト（16-追記 v2.6.3） =====
 
-// いつものうごため（うごきのワンボタン）：種類×時間
+// うごための4つのボタン（18-追記 v2.8.1）：種類×時間
+export type QuickExerciseType = (typeof QUICK_EXERCISE_TYPES)[number]
+// 設定画面の「うごための時間」（user_profiles.exercise_presets。分）
+export type ExercisePresets = Record<QuickExerciseType, number>
 export interface QuickExercise {
-  type: Exclude<ExerciseType, 'steps'>
+  type: QuickExerciseType
   minutes: number
 }
 

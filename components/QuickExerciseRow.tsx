@@ -1,7 +1,8 @@
 'use client'
 
-// 今日の記録の「うごため」（16-追記 v2.6.3〜v2.6.5）。いつものうごため2つは押すとすぐ保存、［＋ ほかのうごため］はうごための画面
-// どのうごためを出すかは pickFrequentExercises、保存は呼び出し側（今日の画面）で行う。ボタンに kcal は出さない（トーストで伝える）
+// 今日の記録の「うごため」（16-追記 v2.6.3〜v2.6.5・18-追記 v2.8.1）。🚶🏃💪⚽ の4つは押すとすぐ保存、［＋］はうごための画面
+// 4つの時間は設定画面の「うごための時間」（buildQuickExercises）、保存は呼び出し側（今日の画面）で行う
+// ボタンは「アイコン＋時間」だけ。種類名と kcal は出さない（kcal はトーストで伝える）
 
 import { EXERCISE_SECTION_NOTE } from '@/lib/calorieConstants'
 import { EXERCISE_EMOJI, EXERCISE_LABEL, EXERCISE_TYPE_EMOJI, EXERCISE_TYPE_LABELS, type QuickExercise } from '@/types'
@@ -16,12 +17,12 @@ export function QuickExerciseRow({
 }: {
   isToday: boolean
   summary: string | null // 「🚶30分・👣8,000歩」
-  exercises: QuickExercise[] // いつものうごため
+  exercises: QuickExercise[] // 🚶🏃💪⚽ の4つ
   saving: boolean
   onQuick: (exercise: QuickExercise) => void
   onMore: () => void
 }) {
-  const chip = 'shrink-0 bg-stone-800 text-amber-400 font-bold text-xs px-3 py-2 rounded-full disabled:opacity-50'
+  const button = 'min-w-0 whitespace-nowrap rounded-xl py-2.5 font-bold disabled:opacity-50'
 
   return (
     <div>
@@ -38,20 +39,28 @@ export function QuickExerciseRow({
             {isToday ? '今日は' : 'この日は'} {summary}
           </p>
         )}
-        <div className="flex gap-2 overflow-x-auto">
+        <div className="grid grid-cols-5 gap-1.5">
           {exercises.map((ex) => (
             <button
               key={ex.type}
               type="button"
               disabled={saving}
               onClick={() => onQuick(ex)}
-              className={chip}
+              aria-label={`${EXERCISE_TYPE_LABELS[ex.type]} ${ex.minutes}分を記録`}
+              // 「🚶120分」のように3桁のときは、入りきるように文字を少し小さくする
+              className={`${button} bg-stone-800 text-amber-400 ${ex.minutes >= 100 ? 'text-[11px] tracking-tighter' : 'text-xs'}`}
             >
-              {EXERCISE_TYPE_EMOJI[ex.type]} {EXERCISE_TYPE_LABELS[ex.type]} {ex.minutes}分
+              {EXERCISE_TYPE_EMOJI[ex.type]}
+              {ex.minutes}分
             </button>
           ))}
-          <button type="button" onClick={onMore} className={chip}>
-            ＋ ほかの{EXERCISE_LABEL}
+          <button
+            type="button"
+            onClick={onMore}
+            aria-label={`ほかの${EXERCISE_LABEL}`}
+            className={`${button} border border-stone-600 text-stone-300 text-sm`}
+          >
+            ＋
           </button>
         </div>
       </div>
